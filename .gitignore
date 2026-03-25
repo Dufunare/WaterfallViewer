@@ -1,0 +1,90 @@
+############################
+# Node / Frontend (React + Vite)
+############################
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.local
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+############################
+# Env files
+############################
+.env
+.env.*
+!.env.example
+
+############################
+# IDE / Editor
+############################
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+############################
+# Build / Output
+############################
+build/
+out/
+
+############################
+# Tauri / Rust
+############################
+
+# Rust target (最重要)
+src-tauri/target/
+
+# Cargo lock（这里有两种策略，见下面说明）
+# 对于应用项目建议保留
+# Cargo.lock
+
+# 临时文件
+**/*.rs.bk
+
+############################
+# Tauri specific
+############################
+
+# Tauri build output
+src-tauri/target/release/bundle/
+src-tauri/target/debug/
+
+# Windows installer artifacts
+*.msi
+*.exe
+
+# macOS
+*.dmg
+
+# Linux
+*.AppImage
+*.deb
+
+############################
+# Local runtime / cache（未来很重要）
+############################
+
+# 你未来会用到的缩略图缓存
+.cache/
+thumb-cache/
+tmp/
+
+############################
+# Logs & runtime
+############################
+logs/
+*.log
+
+############################
+# Optional（调试用）
+############################
+coverage/
