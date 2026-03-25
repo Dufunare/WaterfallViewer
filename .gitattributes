@@ -1,4 +1,8 @@
-* text=auto
-*.png binary
-*.jpg binary
-*.mp4 binary
+*.ts text
+*.tsx text
+*.js text
+*.rs text
+*.css text
+*.html text
+*.json text
+*.md text
