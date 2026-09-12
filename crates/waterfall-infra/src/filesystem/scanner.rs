@@ -126,10 +126,11 @@ where
                 modified_at_unix_ns: modified_since_epoch.map(|duration| duration.as_nanos()),
             };
 
-            let visual = match self
-                .metadata_reader
-                .read_visual_metadata_with_fingerprint(&absolute_locator, &kind, Some(fingerprint))
-            {
+            let visual = match self.metadata_reader.read_visual_metadata_with_fingerprint(
+                &absolute_locator,
+                &kind,
+                Some(fingerprint),
+            ) {
                 Ok(visual) => visual,
                 Err(error) => {
                     sink.emit(ScanEvent::Warning {
