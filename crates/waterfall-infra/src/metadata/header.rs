@@ -2,7 +2,8 @@ use std::{fs::File, io::Read};
 
 use waterfall_core::{MediaKind, MetadataReadFailure, VisualMetadata, VisualMetadataReader};
 
-const HEADER_READ_LIMIT: u64 = 512 * 1024;
+const FAST_HEADER_BYTES: u64 = 32;
+const JPEG_HEADER_READ_LIMIT: u64 = 512 * 1024;
 
 #[derive(Debug, Default)]
 pub struct HeaderVisualMetadataReader;
@@ -23,17 +24,29 @@ impl VisualMetadataReader for HeaderVisualMetadataReader {
             return Ok(None);
         }
 
-        let file = File::open(locator).map_err(|error| {
+        let mut file = File::open(locator).map_err(|error| {
             MetadataReadFailure::new(format!("failed to open media header: {error}"))
         })?;
-        let mut header = Vec::new();
-        file.take(HEADER_READ_LIMIT)
+        let mut header = Vec::with_capacity(FAST_HEADER_BYTES as usize);
+        file.by_ref()
+            .take(FAST_HEADER_BYTES)
             .read_to_end(&mut header)
             .map_err(|error| {
                 MetadataReadFailure::new(format!("failed to read media header: {error}"))
             })?;
 
-        Ok(parse_dimensions(&header))
+        if !is_jpeg(&header) {
+            return Ok(parse_dimensions(&header));
+        }
+
+        let remaining = JPEG_HEADER_READ_LIMIT.saturating_sub(header.len() as u64);
+        file.take(remaining)
+            .read_to_end(&mut header)
+            .map_err(|error| {
+                MetadataReadFailure::new(format!("failed to read JPEG header: {error}"))
+            })?;
+
+        Ok(parse_jpeg(&header))
     }
 }
 
@@ -68,10 +81,7 @@ fn parse_bmp(data: &[u8]) -> Option<VisualMetadata> {
     }
 
     match le_u32(data, 14)? {
-        12 => dimensions(
-            u32::from(le_u16(data, 18)?),
-            u32::from(le_u16(data, 20)?),
-        ),
+        12 => dimensions(u32::from(le_u16(data, 18)?), u32::from(le_u16(data, 20)?)),
         size if size >= 40 => {
             let width = le_i32(data, 18)?;
             let height = le_i32(data, 22)?;
@@ -90,7 +100,10 @@ fn parse_webp(data: &[u8]) -> Option<VisualMetadata> {
     }
 
     match data.get(12..16)? {
-        b"VP8X" => dimensions(le_u24(data, 24)?.checked_add(1)?, le_u24(data, 27)?.checked_add(1)?),
+        b"VP8X" => dimensions(
+            le_u24(data, 24)?.checked_add(1)?,
+            le_u24(data, 27)?.checked_add(1)?,
+        ),
         b"VP8L" => {
             if *data.get(20)? != 0x2f {
                 return None;
@@ -113,7 +126,7 @@ fn parse_webp(data: &[u8]) -> Option<VisualMetadata> {
 }
 
 fn parse_jpeg(data: &[u8]) -> Option<VisualMetadata> {
-    if data.get(..2)? != [0xff, 0xd8] {
+    if !is_jpeg(data) {
         return None;
     }
 
@@ -157,6 +170,10 @@ fn parse_jpeg(data: &[u8]) -> Option<VisualMetadata> {
     None
 }
 
+fn is_jpeg(data: &[u8]) -> bool {
+    data.len() >= 2 && data[0] == 0xff && data[1] == 0xd8
+}
+
 fn is_jpeg_start_of_frame(marker: u8) -> bool {
     matches!(
         marker,
@@ -173,23 +190,33 @@ fn dimensions(width: u32, height: u32) -> Option<VisualMetadata> {
 }
 
 fn be_u16(data: &[u8], offset: usize) -> Option<u16> {
-    Some(u16::from_be_bytes(data.get(offset..offset + 2)?.try_into().ok()?))
+    Some(u16::from_be_bytes(
+        data.get(offset..offset + 2)?.try_into().ok()?,
+    ))
 }
 
 fn le_u16(data: &[u8], offset: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(data.get(offset..offset + 2)?.try_into().ok()?))
+    Some(u16::from_le_bytes(
+        data.get(offset..offset + 2)?.try_into().ok()?,
+    ))
 }
 
 fn be_u32(data: &[u8], offset: usize) -> Option<u32> {
-    Some(u32::from_be_bytes(data.get(offset..offset + 4)?.try_into().ok()?))
+    Some(u32::from_be_bytes(
+        data.get(offset..offset + 4)?.try_into().ok()?,
+    ))
 }
 
 fn le_u32(data: &[u8], offset: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(data.get(offset..offset + 4)?.try_into().ok()?))
+    Some(u32::from_le_bytes(
+        data.get(offset..offset + 4)?.try_into().ok()?,
+    ))
 }
 
 fn le_i32(data: &[u8], offset: usize) -> Option<i32> {
-    Some(i32::from_le_bytes(data.get(offset..offset + 4)?.try_into().ok()?))
+    Some(i32::from_le_bytes(
+        data.get(offset..offset + 4)?.try_into().ok()?,
+    ))
 }
 
 fn le_u24(data: &[u8], offset: usize) -> Option<u32> {
@@ -271,8 +298,8 @@ mod tests {
     #[test]
     fn parses_jpeg_sof_dimensions() {
         let data = [
-            0xff, 0xd8, 0xff, 0xe0, 0x00, 0x04, 0x00, 0x00, 0xff, 0xc0, 0x00, 0x11, 0x08,
-            0x04, 0x38, 0x07, 0x80,
+            0xff, 0xd8, 0xff, 0xe0, 0x00, 0x04, 0x00, 0x00, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x04,
+            0x38, 0x07, 0x80,
         ];
 
         assert_eq!(
