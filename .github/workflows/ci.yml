@@ -62,4 +62,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-      - run: cargo check --manifest-path src-tauri/Cargo.toml --locked
+      - name: Check and refresh Tauri lockfile
+        run: cargo check --manifest-path src-tauri/Cargo.toml
+      - name: Run Tauri unit tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tauri-cargo-lock-${{ github.sha }}
+          path: src-tauri/Cargo.lock
+          if-no-files-found: error
