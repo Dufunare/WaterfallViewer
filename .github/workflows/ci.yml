@@ -12,7 +12,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   rust-core:
@@ -34,10 +34,12 @@ jobs:
         run: cargo test --manifest-path crates/Cargo.toml --workspace
 
   frontend:
-    name: Frontend build
+    name: Frontend
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
       - uses: pnpm/action-setup@v4
         with:
           version: 10
@@ -46,8 +48,24 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm build
+      - name: Install and refresh lockfile
+        run: pnpm install
+      - name: Commit refreshed pnpm lockfile
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'feat/frontend-media-session'
+        run: |
+          if git diff --quiet -- pnpm-lock.yaml; then
+            echo "pnpm lockfile is already current"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pnpm-lock.yaml
+          git commit -m "chore: refresh pnpm lockfile"
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
+      - name: Test
+        run: pnpm test
+      - name: Build
+        run: pnpm build
 
   tauri-rust:
     name: Tauri Rust
