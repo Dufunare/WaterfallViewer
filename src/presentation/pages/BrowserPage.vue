@@ -8,12 +8,13 @@ import {
 } from "vue";
 
 import type {
+  BrowserLayoutMode,
   BrowserTile,
-  MasonryBrowserController,
-} from "../../application/browser/masonryBrowserController";
+  MediaBrowserController,
+} from "../../application/browser/mediaBrowserController";
 
 const props = defineProps<{
-  browser: MasonryBrowserController;
+  browser: MediaBrowserController;
 }>();
 
 const viewportElement = ref<HTMLElement | null>(null);
@@ -87,6 +88,18 @@ function syncViewport(): void {
     scrollTop: element.scrollTop,
     devicePixelRatio: Math.max(1, window.devicePixelRatio || 1),
   });
+}
+
+function setLayoutMode(mode: BrowserLayoutMode): void {
+  if (mode === snapshot.value.layoutMode) {
+    return;
+  }
+  const element = viewportElement.value;
+  if (element !== null) {
+    element.scrollTop = 0;
+  }
+  props.browser.setLayoutMode(mode);
+  syncViewport();
 }
 
 async function openSource(): Promise<void> {
@@ -176,6 +189,26 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="toolbar-actions">
+        <div class="layout-switch" role="group" aria-label="Layout mode">
+          <button
+            class="layout-button"
+            :class="{ active: snapshot.layoutMode === 'masonry' }"
+            type="button"
+            :aria-pressed="snapshot.layoutMode === 'masonry'"
+            @click="setLayoutMode('masonry')"
+          >
+            Columns
+          </button>
+          <button
+            class="layout-button"
+            :class="{ active: snapshot.layoutMode === 'justified' }"
+            type="button"
+            :aria-pressed="snapshot.layoutMode === 'justified'"
+            @click="setLayoutMode('justified')"
+          >
+            Rows
+          </button>
+        </div>
         <button
           v-if="canCancel"
           class="toolbar-button secondary"
@@ -205,7 +238,7 @@ onBeforeUnmount(() => {
       aria-label="Media browser"
       @scroll.passive="scheduleViewportSync"
     >
-      <div class="masonry-canvas" :style="canvasStyle">
+      <div class="media-canvas" :style="canvasStyle">
         <figure
           v-for="tile in snapshot.tiles"
           :key="tile.mediaId"
@@ -269,7 +302,7 @@ onBeforeUnmount(() => {
   height: var(--wf-toolbar-height);
   flex: 0 0 var(--wf-toolbar-height);
   display: grid;
-  grid-template-columns: minmax(150px, 1fr) auto minmax(150px, 1fr);
+  grid-template-columns: minmax(150px, 1fr) auto minmax(220px, 1fr);
   align-items: center;
   gap: 16px;
   padding: 0 14px;
@@ -340,6 +373,31 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
+.layout-switch {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border: 1px solid var(--wf-border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.layout-button {
+  min-height: 26px;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--wf-text-muted);
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.layout-button.active {
+  background: var(--wf-surface-raised);
+  color: var(--wf-text);
+}
+
 .toolbar-button,
 .empty-action {
   border: 1px solid var(--wf-border);
@@ -394,7 +452,7 @@ onBeforeUnmount(() => {
   contain: strict;
 }
 
-.masonry-canvas {
+.media-canvas {
   position: relative;
   width: 100%;
 }
@@ -499,7 +557,8 @@ onBeforeUnmount(() => {
     grid-template-columns: 1fr auto;
   }
 
-  .toolbar-stats {
+  .toolbar-stats,
+  .layout-switch {
     display: none;
   }
 }
