@@ -39,9 +39,10 @@ const ZERO_OVERSCAN: OverscanInsets = {
  * lets viewport queries binary-search past nodes that end above the window,
  * while a second binary search excludes nodes that start below it.
  *
- * The index is intentionally renderer-agnostic: it knows only layout geometry.
- * Masonry and future justified layouts can share it; the free-canvas renderer
- * will use a dedicated 2D spatial index instead.
+ * Masonry and justified builders emit new rows/items with non-decreasing top
+ * coordinates. That common streaming path is appended directly and only the
+ * new prefix values are computed. Arbitrary callers may still append out of
+ * order; those batches fall back to a full merge/reindex for correctness.
  */
 export class VerticalViewportIndex<TNode extends LayoutNode = LayoutNode> {
   #entries: IndexedNode<TNode>[] = [];
@@ -62,17 +63,31 @@ export class VerticalViewportIndex<TNode extends LayoutNode = LayoutNode> {
       return;
     }
 
-    const added = nodes
-      .map((node) => ({
-        node: cloneNode(node),
-        sequence: this.#nextSequence++,
-        bottom: node.y + node.height,
-        prefixMaxBottom: 0,
-      }))
-      .sort(compareByTopThenSequence);
+    const added = nodes.map((node) => ({
+      node: cloneNode(node),
+      sequence: this.#nextSequence++,
+      bottom: node.y + node.height,
+      prefixMaxBottom: 0,
+    }));
 
-    this.#entries = mergeEntries(this.#entries, added);
-    recomputePrefixMaxBottom(this.#entries);
+    if (!entriesAreSorted(added)) {
+      added.sort(compareByTopThenSequence);
+    }
+
+    const lastExisting =
+      this.#entries.length === 0
+        ? undefined
+        : this.#entries[this.#entries.length - 1];
+    const canAppendTail =
+      lastExisting === undefined ||
+      compareByTopThenSequence(lastExisting, added[0]) <= 0;
+
+    if (canAppendTail) {
+      appendTailWithPrefix(this.#entries, added);
+    } else {
+      this.#entries = mergeEntries(this.#entries, added);
+      recomputePrefixMaxBottom(this.#entries);
+    }
 
     for (const node of nodes) {
       this.#mediaIds.add(node.mediaId);
@@ -130,6 +145,33 @@ export function queryVisibleNodes<TNode extends LayoutNode>(
   options: ViewportQueryOptions = {},
 ): readonly TNode[] {
   return new VerticalViewportIndex(nodes).query(viewport, options);
+}
+
+function appendTailWithPrefix<TNode extends LayoutNode>(
+  existing: IndexedNode<TNode>[],
+  added: IndexedNode<TNode>[],
+): void {
+  let maximum =
+    existing.length === 0
+      ? Number.NEGATIVE_INFINITY
+      : existing[existing.length - 1].prefixMaxBottom;
+
+  for (const entry of added) {
+    maximum = Math.max(maximum, entry.bottom);
+    entry.prefixMaxBottom = maximum;
+    existing.push(entry);
+  }
+}
+
+function entriesAreSorted<TNode extends LayoutNode>(
+  entries: readonly IndexedNode<TNode>[],
+): boolean {
+  for (let index = 1; index < entries.length; index += 1) {
+    if (compareByTopThenSequence(entries[index - 1], entries[index]) > 0) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function mergeEntries<TNode extends LayoutNode>(
