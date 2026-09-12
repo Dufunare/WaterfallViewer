@@ -79,7 +79,9 @@ pub async fn request_thumbnail(
         generate_thumbnail_representation(resources, resource_key, cache_root, spec)
     })
     .await
-    .map_err(|error| RepresentationCommandError::internal(format!("thumbnail task failed: {error}")))?
+    .map_err(|error| {
+        RepresentationCommandError::internal(format!("thumbnail task failed: {error}"))
+    })?
 }
 
 fn generate_thumbnail_representation(
@@ -141,7 +143,9 @@ fn thumbnail_cache_path(
 
 fn map_thumbnail_error(error: ThumbnailError) -> RepresentationCommandError {
     match error {
-        ThumbnailError::InvalidSpec(message) => RepresentationCommandError::invalid_request(message),
+        ThumbnailError::InvalidSpec(message) => {
+            RepresentationCommandError::invalid_request(message)
+        }
         ThumbnailError::Unsupported(message) => RepresentationCommandError::unsupported(message),
         ThumbnailError::Decode(message) => RepresentationCommandError::unsupported(message),
         ThumbnailError::Io(error) => RepresentationCommandError::internal(error.to_string()),
@@ -170,7 +174,8 @@ mod tests {
         let cache = dir.path().join("cache");
         fs::write(&source, b"abc").unwrap();
 
-        let first = thumbnail_cache_path(&cache, &source, ThumbnailSpec::new(256).unwrap()).unwrap();
+        let first =
+            thumbnail_cache_path(&cache, &source, ThumbnailSpec::new(256).unwrap()).unwrap();
         let other_edge =
             thumbnail_cache_path(&cache, &source, ThumbnailSpec::new(512).unwrap()).unwrap();
         assert_ne!(first, other_edge);
@@ -178,8 +183,12 @@ mod tests {
         let mut file = fs::OpenOptions::new().append(true).open(&source).unwrap();
         file.write_all(b"def").unwrap();
         file.sync_all().unwrap();
-        let changed = thumbnail_cache_path(&cache, &source, ThumbnailSpec::new(256).unwrap()).unwrap();
+        let changed =
+            thumbnail_cache_path(&cache, &source, ThumbnailSpec::new(256).unwrap()).unwrap();
         assert_ne!(first, changed);
-        assert_eq!(first.extension().and_then(|value| value.to_str()), Some("png"));
+        assert_eq!(
+            first.extension().and_then(|value| value.to_str()),
+            Some("png")
+        );
     }
 }

@@ -115,8 +115,8 @@ impl MediaResourceRegistry {
         source_resource_key: &str,
         path: impl Into<PathBuf>,
     ) -> Result<String, ResourceRegistryError> {
-        let (generation, source_key) =
-            parse_resource_key(source_resource_key).ok_or(ResourceRegistryError::UnknownResource)?;
+        let (generation, source_key) = parse_resource_key(source_resource_key)
+            .ok_or(ResourceRegistryError::UnknownResource)?;
         let path = path.into();
         let mut state = self
             .inner
