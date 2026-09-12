@@ -100,6 +100,24 @@ describe("VerticalViewportIndex", () => {
     expect(incremental.snapshot()).toEqual(all);
   });
 
+  it("falls back to a sorted merge when a later batch arrives above existing nodes", () => {
+    const index = new VerticalViewportIndex<LayoutNode>();
+    index.append([node("a", 0, 100), node("b", 0, 220)]);
+    index.append([node("c", 0, 20), node("d", 0, 360)]);
+
+    expect(
+      index
+        .query({ x: 0, y: 0, width: 100, height: 130 })
+        .map((item) => item.mediaId),
+    ).toEqual(["a", "c"]);
+    expect(index.snapshot().map((item) => item.mediaId)).toEqual([
+      "a",
+      "b",
+      "c",
+      "d",
+    ]);
+  });
+
   it("rejects invalid or duplicate batches atomically", () => {
     const index = new VerticalViewportIndex([node("a", 0, 0)]);
 
