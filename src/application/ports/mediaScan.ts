@@ -14,6 +14,8 @@ export interface MediaItem {
   fileSize: number;
   modifiedAtMs: number | null;
   visual: VisualMetadata | null;
+  /** Platform-issued opaque handle. It is not a filesystem path or URL. */
+  resourceKey: string;
 }
 
 export interface SourceDescriptor {
