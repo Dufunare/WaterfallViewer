@@ -43,7 +43,7 @@ impl std::error::Error for VisualMetadataCacheError {}
 pub struct VisualMetadataCacheKey<'a> {
     pub locator: &'a str,
     pub file_size: u64,
-    pub modified_at_ms: u64,
+    pub modified_at_unix_ns: u128,
     pub kind: &'a MediaKind,
     pub parser_version: u32,
 }
@@ -84,7 +84,7 @@ where
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct CachedVisualMetadataEntry {
     file_size: u64,
-    modified_at_ms: u64,
+    modified_at_unix_ns: u128,
     kind: MediaKind,
     parser_version: u32,
     value: Option<VisualMetadata>,
@@ -151,7 +151,7 @@ impl VisualMetadataCache for InMemoryVisualMetadataCache {
         };
 
         if entry.file_size != key.file_size
-            || entry.modified_at_ms != key.modified_at_ms
+            || entry.modified_at_unix_ns != key.modified_at_unix_ns
             || &entry.kind != key.kind
             || entry.parser_version != key.parser_version
         {
@@ -185,7 +185,7 @@ impl VisualMetadataCache for InMemoryVisualMetadataCache {
             key.locator.to_owned(),
             CachedVisualMetadataEntry {
                 file_size: key.file_size,
-                modified_at_ms: key.modified_at_ms,
+                modified_at_unix_ns: key.modified_at_unix_ns,
                 kind: key.kind.clone(),
                 parser_version: key.parser_version,
                 value: value.cloned(),
@@ -236,7 +236,7 @@ where
         let key = VisualMetadataCacheKey {
             locator,
             file_size: fingerprint.file_size,
-            modified_at_ms: fingerprint.modified_at_ms,
+            modified_at_unix_ns: fingerprint.modified_at_unix_ns,
             kind,
             parser_version: self.parser_version,
         };
@@ -258,22 +258,20 @@ where
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct FileFingerprint {
     file_size: u64,
-    modified_at_ms: u64,
+    modified_at_unix_ns: u128,
 }
 
 fn file_fingerprint(locator: &str) -> Option<FileFingerprint> {
     let metadata = fs::metadata(locator).ok()?;
-    let modified_at_ms = metadata
+    let modified_at_unix_ns = metadata
         .modified()
         .ok()?
         .duration_since(UNIX_EPOCH)
         .ok()?
-        .as_millis()
-        .try_into()
-        .ok()?;
+        .as_nanos();
     Some(FileFingerprint {
         file_size: metadata.len(),
-        modified_at_ms,
+        modified_at_unix_ns,
     })
 }
 
@@ -467,7 +465,7 @@ mod tests {
                     &VisualMetadataCacheKey {
                         locator,
                         file_size: 1,
-                        modified_at_ms: 1,
+                        modified_at_unix_ns: 1,
                         kind: &kind,
                         parser_version: 1,
                     },
@@ -482,7 +480,7 @@ mod tests {
                 .lookup(&VisualMetadataCacheKey {
                     locator: "a",
                     file_size: 1,
-                    modified_at_ms: 1,
+                    modified_at_unix_ns: 1,
                     kind: &kind,
                     parser_version: 1,
                 })
@@ -495,7 +493,7 @@ mod tests {
                     .lookup(&VisualMetadataCacheKey {
                         locator,
                         file_size: 1,
-                        modified_at_ms: 1,
+                        modified_at_unix_ns: 1,
                         kind: &kind,
                         parser_version: 1,
                     })
