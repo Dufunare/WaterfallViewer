@@ -1,3 +1,4 @@
+import { projectMediaVisual } from "../mediaVisualProjection";
 import type { MediaItem, MediaKind } from "../ports/mediaScan";
 import {
   CanvasViewportModel,
@@ -45,8 +46,10 @@ export interface CanvasSceneOptions {
  * Session-to-world projection for the free-canvas browser.
  *
  * The common scan path appends only newly discovered media. Existing world
- * nodes keep stable coordinates. Media without usable visual metadata receive
- * a square fallback tile so video/audio/unknown geometry remain discoverable.
+ * nodes keep stable coordinates. Video/audio without extracted geometry use
+ * the same fallback aspect ratios as flow views. Other media with unusable
+ * metadata retain a square canvas-only fallback so every scanned item remains
+ * discoverable in free space.
  */
 export class CanvasSceneModel {
   readonly #options: CanvasSceneOptions;
@@ -269,21 +272,15 @@ interface CanvasVisualProjection {
 }
 
 function projectCanvasVisual(item: MediaItem): CanvasVisualProjection {
-  const visual = item.visual;
-  if (
-    visual !== null &&
-    Number.isFinite(visual.width) &&
-    visual.width > 0 &&
-    Number.isFinite(visual.height) &&
-    visual.height > 0
-  ) {
+  const projection = projectMediaVisual(item);
+  if (projection.kind === "visual") {
     return {
       visual: {
         mediaId: item.id,
-        width: visual.width,
-        height: visual.height,
+        width: projection.width,
+        height: projection.height,
       },
-      usedFallback: false,
+      usedFallback: projection.source === "fallback",
     };
   }
 
