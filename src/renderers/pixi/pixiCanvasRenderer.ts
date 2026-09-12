@@ -42,6 +42,8 @@ export class PixiCanvasRenderer {
   #app: Application | null = null;
   #host: HTMLElement | null = null;
   #frame: number | null = null;
+  #renderWidth = 0;
+  #renderHeight = 0;
   #disposed = false;
 
   constructor(options: PixiCanvasRendererOptions = {}) {
@@ -81,14 +83,17 @@ export class PixiCanvasRenderer {
       textureGCActive: true,
     });
 
-    app.canvas.style.display = "block";
-    app.canvas.style.width = "100%";
-    app.canvas.style.height = "100%";
-    app.canvas.style.touchAction = "none";
-    host.appendChild(app.canvas);
+    const canvas = app.canvas as HTMLCanvasElement;
+    canvas.style.display = "block";
+    canvas.style.width = "100%";
+    canvas.style.height = "100%";
+    canvas.style.touchAction = "none";
+    host.appendChild(canvas);
 
     this.#host = host;
     this.#app = app;
+    this.#renderWidth = width;
+    this.#renderHeight = height;
     this.#queueRender();
   }
 
@@ -115,10 +120,12 @@ export class PixiCanvasRenderer {
 
     const viewport = snapshot.camera.viewport;
     if (
-      app.renderer.width !== Math.round(viewport.width * app.renderer.resolution) ||
-      app.renderer.height !== Math.round(viewport.height * app.renderer.resolution)
+      this.#renderWidth !== viewport.width ||
+      this.#renderHeight !== viewport.height
     ) {
       app.renderer.resize(viewport.width, viewport.height);
+      this.#renderWidth = viewport.width;
+      this.#renderHeight = viewport.height;
     }
     this.#queueRender();
   }
@@ -142,6 +149,8 @@ export class PixiCanvasRenderer {
     this.#app?.destroy({ removeView: true }, { children: true, context: true });
     this.#app = null;
     this.#host = null;
+    this.#renderWidth = 0;
+    this.#renderHeight = 0;
   }
 
   #createRecord(): TileRecord {
