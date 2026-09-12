@@ -70,7 +70,7 @@ export class ViewerWorkspaceController {
       sourceDisplayName: this.#sourceDisplayName,
       sessionId: session?.id ?? null,
       scanState: session === null ? null : cloneScanState(session.scanState),
-      itemCount: session?.items.size ?? 0,
+      itemCount: session?.items.sourceSize ?? 0,
     };
   }
 
