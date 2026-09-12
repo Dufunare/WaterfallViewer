@@ -72,7 +72,6 @@ function onPointerDown(event: PointerEvent): void {
     return;
   }
 
-  event.preventDefault();
   activePointerId = event.pointerId;
   lastPointerX = event.clientX;
   lastPointerY = event.clientY;
