@@ -243,9 +243,11 @@ where
             return self.inner.read_visual_metadata(locator, kind);
         };
         let Some(modified_at_unix_ns) = fingerprint.modified_at_unix_ns else {
-            return self
-                .inner
-                .read_visual_metadata_with_fingerprint(locator, kind, Some(fingerprint));
+            return self.inner.read_visual_metadata_with_fingerprint(
+                locator,
+                kind,
+                Some(fingerprint),
+            );
         };
         let key = VisualMetadataCacheKey {
             locator,
@@ -259,9 +261,9 @@ where
             return Ok(value);
         }
 
-        let value = self
-            .inner
-            .read_visual_metadata_with_fingerprint(locator, kind, Some(fingerprint))?;
+        let value =
+            self.inner
+                .read_visual_metadata_with_fingerprint(locator, kind, Some(fingerprint))?;
         let _ = self.cache.store(&key, value.as_ref());
         Ok(value)
     }
@@ -335,10 +337,18 @@ mod tests {
         let fingerprint = fingerprint(6, Some(10));
 
         let first = reader
-            .read_visual_metadata_with_fingerprint("image.png", &MediaKind::Image, Some(fingerprint))
+            .read_visual_metadata_with_fingerprint(
+                "image.png",
+                &MediaKind::Image,
+                Some(fingerprint),
+            )
             .expect("first read");
         let second = reader
-            .read_visual_metadata_with_fingerprint("image.png", &MediaKind::Image, Some(fingerprint))
+            .read_visual_metadata_with_fingerprint(
+                "image.png",
+                &MediaKind::Image,
+                Some(fingerprint),
+            )
             .expect("cached read");
 
         assert_eq!(first, second);
