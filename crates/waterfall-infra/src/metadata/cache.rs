@@ -1,12 +1,10 @@
 use std::{
     collections::{HashMap, VecDeque},
-    fs,
     sync::{Arc, RwLock},
-    time::UNIX_EPOCH,
 };
 
 use waterfall_core::{
-    MediaKind, MetadataReadFailure, VisualMetadata, VisualMetadataReader,
+    MediaFileFingerprint, MediaKind, MetadataReadFailure, VisualMetadata, VisualMetadataReader,
 };
 
 pub const VISUAL_METADATA_PARSER_VERSION: u32 = 1;
@@ -226,17 +224,33 @@ where
         locator: &str,
         kind: &MediaKind,
     ) -> Result<Option<VisualMetadata>, MetadataReadFailure> {
+        self.inner.read_visual_metadata(locator, kind)
+    }
+
+    fn read_visual_metadata_with_fingerprint(
+        &self,
+        locator: &str,
+        kind: &MediaKind,
+        fingerprint: Option<MediaFileFingerprint>,
+    ) -> Result<Option<VisualMetadata>, MetadataReadFailure> {
         if matches!(kind, MediaKind::Audio) {
-            return self.inner.read_visual_metadata(locator, kind);
+            return self
+                .inner
+                .read_visual_metadata_with_fingerprint(locator, kind, fingerprint);
         }
 
-        let Some(fingerprint) = file_fingerprint(locator) else {
+        let Some(fingerprint) = fingerprint else {
             return self.inner.read_visual_metadata(locator, kind);
+        };
+        let Some(modified_at_unix_ns) = fingerprint.modified_at_unix_ns else {
+            return self
+                .inner
+                .read_visual_metadata_with_fingerprint(locator, kind, Some(fingerprint));
         };
         let key = VisualMetadataCacheKey {
             locator,
             file_size: fingerprint.file_size,
-            modified_at_unix_ns: fingerprint.modified_at_unix_ns,
+            modified_at_unix_ns,
             kind,
             parser_version: self.parser_version,
         };
@@ -245,44 +259,17 @@ where
             return Ok(value);
         }
 
-        let value = self.inner.read_visual_metadata(locator, kind)?;
-
-        if file_fingerprint(locator) == Some(fingerprint) {
-            let _ = self.cache.store(&key, value.as_ref());
-        }
-
+        let value = self
+            .inner
+            .read_visual_metadata_with_fingerprint(locator, kind, Some(fingerprint))?;
+        let _ = self.cache.store(&key, value.as_ref());
         Ok(value)
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct FileFingerprint {
-    file_size: u64,
-    modified_at_unix_ns: u128,
-}
-
-fn file_fingerprint(locator: &str) -> Option<FileFingerprint> {
-    let metadata = fs::metadata(locator).ok()?;
-    let modified_at_unix_ns = metadata
-        .modified()
-        .ok()?
-        .duration_since(UNIX_EPOCH)
-        .ok()?
-        .as_nanos();
-    Some(FileFingerprint {
-        file_size: metadata.len(),
-        modified_at_unix_ns,
-    })
-}
-
 #[cfg(test)]
 mod tests {
-    use std::{
-        fs,
-        sync::atomic::{AtomicUsize, Ordering},
-    };
-
-    use tempfile::tempdir;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
 
@@ -338,22 +325,20 @@ mod tests {
 
     #[test]
     fn reuses_cached_metadata_while_file_fingerprint_is_stable() {
-        let directory = tempdir().expect("temp directory");
-        let path = directory.path().join("image.png");
-        fs::write(&path, b"stable").expect("write media");
-        let locator = path.to_string_lossy();
-        let cache = InMemoryVisualMetadataCache::new();
-        let inner = CountingReader::new(Some(VisualMetadata {
-            width: 1920,
-            height: 1080,
-        }));
-        let reader = CachingVisualMetadataReader::new(inner, cache);
+        let reader = CachingVisualMetadataReader::new(
+            CountingReader::new(Some(VisualMetadata {
+                width: 1920,
+                height: 1080,
+            })),
+            InMemoryVisualMetadataCache::new(),
+        );
+        let fingerprint = fingerprint(6, Some(10));
 
         let first = reader
-            .read_visual_metadata(&locator, &MediaKind::Image)
+            .read_visual_metadata_with_fingerprint("image.png", &MediaKind::Image, Some(fingerprint))
             .expect("first read");
         let second = reader
-            .read_visual_metadata(&locator, &MediaKind::Image)
+            .read_visual_metadata_with_fingerprint("image.png", &MediaKind::Image, Some(fingerprint))
             .expect("cached read");
 
         assert_eq!(first, second);
@@ -362,11 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn invalidates_cache_when_file_size_changes() {
-        let directory = tempdir().expect("temp directory");
-        let path = directory.path().join("image.png");
-        fs::write(&path, b"first").expect("write media");
-        let locator = path.to_string_lossy();
+    fn invalidates_cache_when_file_fingerprint_changes() {
         let reader = CachingVisualMetadataReader::new(
             CountingReader::new(Some(VisualMetadata {
                 width: 800,
@@ -376,36 +357,73 @@ mod tests {
         );
 
         reader
-            .read_visual_metadata(&locator, &MediaKind::Image)
+            .read_visual_metadata_with_fingerprint(
+                "image.png",
+                &MediaKind::Image,
+                Some(fingerprint(5, Some(10))),
+            )
             .expect("first read");
-        fs::write(&path, b"second-version").expect("replace media");
         reader
-            .read_visual_metadata(&locator, &MediaKind::Image)
+            .read_visual_metadata_with_fingerprint(
+                "image.png",
+                &MediaKind::Image,
+                Some(fingerprint(14, Some(11))),
+            )
             .expect("invalidated read");
 
         assert_eq!(reader.inner.calls(), 2);
     }
 
     #[test]
+    fn bypasses_cache_when_modified_time_is_unavailable() {
+        let reader = CachingVisualMetadataReader::new(
+            CountingReader::new(Some(VisualMetadata {
+                width: 800,
+                height: 600,
+            })),
+            InMemoryVisualMetadataCache::new(),
+        );
+        let fingerprint = fingerprint(5, None);
+
+        for _ in 0..2 {
+            reader
+                .read_visual_metadata_with_fingerprint(
+                    "image.png",
+                    &MediaKind::Image,
+                    Some(fingerprint),
+                )
+                .expect("uncached read");
+        }
+
+        assert_eq!(reader.inner.calls(), 2);
+        assert!(reader.cache.is_empty().expect("cache state"));
+    }
+
+    #[test]
     fn caches_successful_none_results_for_unchanged_files() {
-        let directory = tempdir().expect("temp directory");
-        let path = directory.path().join("broken.jpg");
-        fs::write(&path, b"not really jpeg").expect("write media");
-        let locator = path.to_string_lossy();
         let reader = CachingVisualMetadataReader::new(
             CountingReader::new(None),
             InMemoryVisualMetadataCache::new(),
         );
+        let fingerprint = fingerprint(15, Some(10));
 
         assert_eq!(
             reader
-                .read_visual_metadata(&locator, &MediaKind::Image)
+                .read_visual_metadata_with_fingerprint(
+                    "broken.jpg",
+                    &MediaKind::Image,
+                    Some(fingerprint),
+                )
                 .expect("first read"),
             None
         );
         assert_eq!(
             reader
-                .read_visual_metadata(&locator, &MediaKind::Image)
+                .read_visual_metadata_with_fingerprint(
+                    "broken.jpg",
+                    &MediaKind::Image,
+                    Some(fingerprint),
+                )
                 .expect("cached read"),
             None
         );
@@ -414,11 +432,8 @@ mod tests {
 
     #[test]
     fn parser_version_and_media_kind_are_part_of_the_cache_identity() {
-        let directory = tempdir().expect("temp directory");
-        let path = directory.path().join("media.bin");
-        fs::write(&path, b"stable").expect("write media");
-        let locator = path.to_string_lossy();
         let cache = Arc::new(InMemoryVisualMetadataCache::new());
+        let fingerprint = fingerprint(6, Some(10));
 
         let first = CachingVisualMetadataReader::with_parser_version(
             CountingReader::new(Some(VisualMetadata {
@@ -429,10 +444,18 @@ mod tests {
             1,
         );
         first
-            .read_visual_metadata(&locator, &MediaKind::Image)
+            .read_visual_metadata_with_fingerprint(
+                "media.bin",
+                &MediaKind::Image,
+                Some(fingerprint),
+            )
             .expect("first read");
         first
-            .read_visual_metadata(&locator, &MediaKind::Video)
+            .read_visual_metadata_with_fingerprint(
+                "media.bin",
+                &MediaKind::Video,
+                Some(fingerprint),
+            )
             .expect("kind invalidation");
         assert_eq!(first.inner.calls(), 2);
 
@@ -445,7 +468,11 @@ mod tests {
             2,
         );
         second
-            .read_visual_metadata(&locator, &MediaKind::Video)
+            .read_visual_metadata_with_fingerprint(
+                "media.bin",
+                &MediaKind::Video,
+                Some(fingerprint),
+            )
             .expect("version invalidation");
         assert_eq!(second.inner.calls(), 1);
     }
@@ -505,10 +532,6 @@ mod tests {
 
     #[test]
     fn cache_adapter_failure_degrades_to_the_underlying_reader() {
-        let directory = tempdir().expect("temp directory");
-        let path = directory.path().join("image.png");
-        fs::write(&path, b"stable").expect("write media");
-        let locator = path.to_string_lossy();
         let reader = CachingVisualMetadataReader::new(
             CountingReader::new(Some(VisualMetadata {
                 width: 320,
@@ -516,11 +539,16 @@ mod tests {
             })),
             FailingCache,
         );
+        let fingerprint = fingerprint(6, Some(10));
 
         for _ in 0..2 {
             assert_eq!(
                 reader
-                    .read_visual_metadata(&locator, &MediaKind::Image)
+                    .read_visual_metadata_with_fingerprint(
+                        "image.png",
+                        &MediaKind::Image,
+                        Some(fingerprint),
+                    )
                     .expect("reader survives cache failure"),
                 Some(VisualMetadata {
                     width: 320,
@@ -529,5 +557,12 @@ mod tests {
             );
         }
         assert_eq!(reader.inner.calls(), 2);
+    }
+
+    fn fingerprint(file_size: u64, modified_at_unix_ns: Option<u128>) -> MediaFileFingerprint {
+        MediaFileFingerprint {
+            file_size,
+            modified_at_unix_ns,
+        }
     }
 }
