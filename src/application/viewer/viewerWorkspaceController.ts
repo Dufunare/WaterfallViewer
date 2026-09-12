@@ -35,6 +35,7 @@ export class ViewerWorkspaceController {
   readonly #unsubscribeSession: () => void;
 
   #sourceDisplayName: string | null = null;
+  #pickGeneration = 0;
   #disposed = false;
 
   constructor(
@@ -84,13 +85,25 @@ export class ViewerWorkspaceController {
 
   async pickAndOpenSource(): Promise<boolean> {
     this.#assertActive();
+    const generation = ++this.#pickGeneration;
     const picked = await this.#sourcePicker.pickDirectory();
-    if (picked === null) {
+    if (
+      this.#disposed ||
+      generation !== this.#pickGeneration ||
+      picked === null
+    ) {
       return false;
     }
 
+    const previousDisplayName = this.#sourceDisplayName;
     this.#sourceDisplayName = picked.displayName;
-    this.#sessionController.openSource(picked.source, this.#scanBatchSize);
+    try {
+      this.#sessionController.openSource(picked.source, this.#scanBatchSize);
+    } catch (error) {
+      this.#sourceDisplayName = previousDisplayName;
+      this.#publish();
+      throw error;
+    }
     return true;
   }
 
@@ -104,6 +117,7 @@ export class ViewerWorkspaceController {
       return;
     }
     this.#disposed = true;
+    this.#pickGeneration += 1;
     this.#unsubscribeSession();
     this.#listeners.clear();
   }
