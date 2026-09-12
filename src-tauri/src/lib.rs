@@ -1,7 +1,9 @@
 mod ipc;
+mod local_source;
 mod media_resource;
 
-use ipc::{cancel_scan, request_thumbnail, start_scan, ScanRegistry};
+use ipc::{cancel_scan, pick_source_directory, request_thumbnail, start_scan, ScanRegistry};
+use local_source::LocalSourceRegistry;
 use media_resource::{respond_to_media_request, MediaResourceRegistry, MEDIA_PROTOCOL};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -11,6 +13,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(ScanRegistry::default())
+        .manage(LocalSourceRegistry::default())
         .manage(resources)
         .register_asynchronous_uri_scheme_protocol(
             MEDIA_PROTOCOL,
@@ -21,11 +24,13 @@ pub fn run() {
                 });
             },
         )
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             start_scan,
             cancel_scan,
-            request_thumbnail
+            request_thumbnail,
+            pick_source_directory
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
