@@ -1,21 +1,20 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "WaterfallViewer",
+  "productName": "waterfallviewer",
   "version": "0.1.0",
-  "identifier": "com.funare.tauri-app",
+  "identifier": "com.funare.waterfallviewer",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"
   },
   "app": {
     "windows": [
       {
-        "title": "tauri-app",
+        "title": "waterfallviewer",
         "width": 800,
-        "height": 600,
-        "decorations": true
+        "height": 600
       }
     ],
     "security": {
