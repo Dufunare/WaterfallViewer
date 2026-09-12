@@ -4,6 +4,8 @@ import type {
   ViewportSize,
 } from "../types";
 
+export type { MediaVisualInfo, ViewportSize } from "../types";
+
 export interface MasonryLayoutConfig {
   viewport: ViewportSize;
   columnCount: number;
