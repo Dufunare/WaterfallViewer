@@ -14,7 +14,7 @@ use waterfall_core::{
 };
 use waterfall_infra::LocalFilesystemScanner;
 
-use crate::media_resource::MediaResourceRegistry;
+use crate::{local_source::LocalSourceRegistry, media_resource::MediaResourceRegistry};
 
 #[derive(Clone, Default)]
 pub struct ScanRegistry {
@@ -77,7 +77,7 @@ impl CancellationProbe for CancellationToken {
 pub struct StartScanRequestDto {
     session_id: String,
     source_id: String,
-    root_path: String,
+    source_locator: String,
     batch_size: usize,
 }
 
@@ -162,6 +162,10 @@ impl ScanCommandError {
         Self::new("invalid-request", message)
     }
 
+    fn source_unavailable(message: impl Into<String>) -> Self {
+        Self::new("source-unavailable", message)
+    }
+
     fn session_exists(session_id: &str) -> Self {
         Self::new(
             "session-exists",
@@ -233,6 +237,7 @@ impl ScanEventSink for ChannelScanSink {
 #[tauri::command]
 pub async fn start_scan(
     registry: State<'_, ScanRegistry>,
+    sources: State<'_, LocalSourceRegistry>,
     resources: State<'_, MediaResourceRegistry>,
     request: StartScanRequestDto,
     on_event: Channel<ScanEventDto>,
@@ -243,13 +248,20 @@ pub async fn start_scan(
         ));
     }
 
+    let root_path = sources
+        .resolve(&request.source_locator)
+        .map_err(|error| ScanCommandError::source_unavailable(error.to_string()))?;
+    let root_locator = root_path.into_os_string().into_string().map_err(|_| {
+        ScanCommandError::source_unavailable("selected directory path is not valid UTF-8")
+    })?;
+
     let registry = registry.inner().clone();
     let resources = resources.inner().clone();
     let session_id = request.session_id.clone();
     let cancellation = registry.register(&session_id)?;
     let scan_request = ScanRequest::new(
         request.session_id,
-        MediaSource::new(SourceId::new(request.source_id), request.root_path),
+        MediaSource::new(SourceId::new(request.source_id), root_locator),
         request.batch_size,
     );
 
