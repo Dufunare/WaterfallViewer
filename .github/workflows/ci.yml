@@ -34,7 +34,7 @@ jobs:
         run: cargo test --manifest-path crates/Cargo.toml --workspace
 
   frontend:
-    name: Frontend build
+    name: Frontend
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -46,8 +46,12 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm build
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Test
+        run: pnpm test
+      - name: Build
+        run: pnpm build
 
   tauri-rust:
     name: Tauri Rust

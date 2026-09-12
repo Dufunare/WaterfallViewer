@@ -1,42 +1,12 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 
-export type MediaKind = "image" | "animated-image" | "video" | "audio";
+import type {
+  MediaScanEvent,
+  MediaScanPort,
+  MediaScanRequest,
+} from "../../application/ports/mediaScan";
 
-export interface VisualMetadata {
-  width: number;
-  height: number;
-}
-
-export interface MediaItem {
-  id: string;
-  sourceId: string;
-  name: string;
-  relativePath: string;
-  kind: MediaKind;
-  fileSize: number;
-  modifiedAtMs?: number;
-  visual?: VisualMetadata;
-}
-
-export interface ScanSummary {
-  discoveredFiles: number;
-  acceptedMedia: number;
-  emittedBatches: number;
-}
-
-export interface ScanWarning {
-  path?: string;
-  message: string;
-}
-
-export type ScanEvent =
-  | { event: "started"; data: { sessionId: string } }
-  | { event: "batch"; data: { sessionId: string; items: MediaItem[] } }
-  | { event: "warning"; data: { sessionId: string; warning: ScanWarning } }
-  | { event: "finished"; data: { sessionId: string; summary: ScanSummary } }
-  | { event: "cancelled"; data: { sessionId: string; summary: ScanSummary } };
-
-export interface StartScanRequest {
+interface TauriStartScanRequest {
   sessionId: string;
   sourceId: string;
   rootPath: string;
@@ -44,14 +14,27 @@ export interface StartScanRequest {
 }
 
 export async function scanMedia(
-  request: StartScanRequest,
-  onEvent: (event: ScanEvent) => void,
+  request: MediaScanRequest,
+  onEvent: (event: MediaScanEvent) => void,
 ): Promise<void> {
-  const channel = new Channel<ScanEvent>();
+  const channel = new Channel<MediaScanEvent>();
   channel.onmessage = onEvent;
-  await invoke("start_scan", { request, onEvent: channel });
+
+  const ipcRequest: TauriStartScanRequest = {
+    sessionId: request.sessionId,
+    sourceId: request.source.id,
+    rootPath: request.source.locator,
+    batchSize: request.batchSize,
+  };
+
+  await invoke("start_scan", { request: ipcRequest, onEvent: channel });
 }
 
 export async function cancelScan(sessionId: string): Promise<boolean> {
   return invoke<boolean>("cancel_scan", { sessionId });
 }
+
+export const tauriMediaScanPort: MediaScanPort = {
+  scan: scanMedia,
+  cancel: cancelScan,
+};
