@@ -7,13 +7,9 @@ pub fn classify_path(path: &Path) -> Option<MediaKind> {
 
     match extension.as_str() {
         "gif" => Some(MediaKind::AnimatedImage),
-        "jpg" | "jpeg" | "png" | "bmp" | "webp" | "avif" | "tif" | "tiff" => {
-            Some(MediaKind::Image)
-        }
+        "jpg" | "jpeg" | "png" | "bmp" | "webp" | "avif" | "tif" | "tiff" => Some(MediaKind::Image),
         "mp4" | "m4v" | "mov" | "mkv" | "webm" | "avi" => Some(MediaKind::Video),
-        "mp3" | "flac" | "wav" | "ogg" | "opus" | "m4a" | "aac" => {
-            Some(MediaKind::Audio)
-        }
+        "mp3" | "flac" | "wav" | "ogg" | "opus" | "m4a" | "aac" => Some(MediaKind::Audio),
         _ => None,
     }
 }
