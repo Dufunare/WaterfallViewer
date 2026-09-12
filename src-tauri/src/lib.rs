@@ -16,7 +16,7 @@ pub fn run() {
             MEDIA_PROTOCOL,
             move |_context, request, responder| {
                 let registry = protocol_resources.clone();
-                std::thread::spawn(move || {
+                tauri::async_runtime::spawn_blocking(move || {
                     responder.respond(respond_to_media_request(registry, request));
                 });
             },
