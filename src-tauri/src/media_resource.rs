@@ -30,7 +30,12 @@ struct SessionResources {
     root: PathBuf,
     next_key: u64,
     paths: HashMap<u64, PathBuf>,
-    derived_keys: HashMap<PathBuf, u64>,
+    derived_keys: HashMap<PathBuf, DerivedRegistration>,
+}
+
+struct DerivedRegistration {
+    key: u64,
+    registrations: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,7 +44,9 @@ pub enum ResourceRegistryError {
     InvalidRelativePath,
     InactiveSession,
     UnknownResource,
+    NotDerivedResource,
     ExhaustedKeys,
+    ExhaustedRegistrations,
     Poisoned,
 }
 
@@ -50,7 +57,9 @@ impl std::fmt::Display for ResourceRegistryError {
             Self::InvalidRelativePath => "media resource path must be a safe relative path",
             Self::InactiveSession => "media resource session is no longer active",
             Self::UnknownResource => "media resource key is not registered in the active session",
+            Self::NotDerivedResource => "media resource key does not identify a derived resource",
             Self::ExhaustedKeys => "media resource key space exhausted",
+            Self::ExhaustedRegistrations => "derived media resource registration count exhausted",
             Self::Poisoned => "media resource registry lock poisoned",
         };
         formatter.write_str(message)
@@ -131,14 +140,63 @@ impl MediaResourceRegistry {
         if !session.paths.contains_key(&source_key) {
             return Err(ResourceRegistryError::UnknownResource);
         }
-        if let Some(existing) = session.derived_keys.get(&path) {
-            return Ok(format!("{}/{}", session.generation, existing));
+        if let Some(existing) = session.derived_keys.get_mut(&path) {
+            existing.registrations = existing
+                .registrations
+                .checked_add(1)
+                .ok_or(ResourceRegistryError::ExhaustedRegistrations)?;
+            return Ok(format!("{}/{}", session.generation, existing.key));
         }
 
         let key = take_next_key(session)?;
         session.paths.insert(key, path.clone());
-        session.derived_keys.insert(path, key);
+        session.derived_keys.insert(
+            path,
+            DerivedRegistration {
+                key,
+                registrations: 1,
+            },
+        );
         Ok(format!("{}/{}", session.generation, key))
+    }
+
+    pub fn release_derived(&self, resource_key: &str) -> Result<bool, ResourceRegistryError> {
+        let (generation, key) =
+            parse_resource_key(resource_key).ok_or(ResourceRegistryError::UnknownResource)?;
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| ResourceRegistryError::Poisoned)?;
+        let session = state
+            .current
+            .as_mut()
+            .filter(|session| session.generation == generation)
+            .ok_or(ResourceRegistryError::InactiveSession)?;
+        let path = session
+            .paths
+            .get(&key)
+            .cloned()
+            .ok_or(ResourceRegistryError::UnknownResource)?;
+
+        let remove = {
+            let registration = session
+                .derived_keys
+                .get_mut(&path)
+                .filter(|registration| registration.key == key)
+                .ok_or(ResourceRegistryError::NotDerivedResource)?;
+            if registration.registrations > 1 {
+                registration.registrations -= 1;
+                false
+            } else {
+                true
+            }
+        };
+
+        if remove {
+            session.derived_keys.remove(&path);
+            session.paths.remove(&key);
+        }
+        Ok(remove)
     }
 
     pub fn resolve(&self, resource_key: &str) -> Option<PathBuf> {
@@ -393,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn derived_resources_are_deduplicated_and_bound_to_the_active_generation() {
+    fn derived_resources_are_deduplicated_and_reference_counted() {
         let registry = MediaResourceRegistry::default();
         registry.begin_session("s1", "/media").unwrap();
         let source = registry.register("s1", "a.jpg").unwrap();
@@ -410,10 +468,57 @@ mod tests {
             Some(PathBuf::from("/cache/thumbs/a.png"))
         );
 
+        assert!(!registry.release_derived(&first).unwrap());
+        assert_eq!(
+            registry.resolve(&first),
+            Some(PathBuf::from("/cache/thumbs/a.png"))
+        );
+        assert!(registry.release_derived(&first).unwrap());
+        assert_eq!(registry.resolve(&first), None);
+
+        let third = registry
+            .register_derived(&source, "/cache/thumbs/a.png")
+            .unwrap();
+        assert_ne!(third, first);
+        assert_eq!(
+            registry.resolve(&third),
+            Some(PathBuf::from("/cache/thumbs/a.png"))
+        );
+    }
+
+    #[test]
+    fn derived_resources_remain_bound_to_the_active_generation() {
+        let registry = MediaResourceRegistry::default();
+        registry.begin_session("s1", "/media").unwrap();
+        let source = registry.register("s1", "a.jpg").unwrap();
+        let derived = registry
+            .register_derived(&source, "/cache/thumbs/a.png")
+            .unwrap();
+
         registry.begin_session("s2", "/other").unwrap();
         assert_eq!(
             registry.register_derived(&source, "/cache/thumbs/a.png"),
             Err(ResourceRegistryError::InactiveSession)
+        );
+        assert_eq!(
+            registry.release_derived(&derived),
+            Err(ResourceRegistryError::InactiveSession)
+        );
+    }
+
+    #[test]
+    fn source_resources_cannot_be_released_as_derived() {
+        let registry = MediaResourceRegistry::default();
+        registry.begin_session("s1", "/media").unwrap();
+        let source = registry.register("s1", "a.jpg").unwrap();
+
+        assert_eq!(
+            registry.release_derived(&source),
+            Err(ResourceRegistryError::NotDerivedResource)
+        );
+        assert_eq!(
+            registry.resolve(&source),
+            Some(PathBuf::from("/media/a.jpg"))
         );
     }
 
