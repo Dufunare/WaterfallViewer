@@ -1,3 +1,8 @@
+import {
+  mediaVisualFingerprint,
+  projectMediaVisual,
+  type MediaVisualDeferredReason,
+} from "../mediaVisualProjection";
 import type { MediaItem } from "../ports/mediaScan";
 import {
   MasonryLayoutBuilder,
@@ -11,7 +16,7 @@ import {
   type ViewportRect,
 } from "../../layout/viewport/verticalViewportIndex";
 
-export type DeferredMediaReason = "missing-visual" | "invalid-visual";
+export type DeferredMediaReason = MediaVisualDeferredReason;
 
 export interface DeferredMedia {
   mediaId: string;
@@ -97,7 +102,7 @@ export class MasonryFlowModel {
     this.#appendItems(items);
     for (const item of items) {
       this.#items.push(cloneMediaItem(item));
-      this.#fingerprints.push(layoutFingerprint(item));
+      this.#fingerprints.push(mediaVisualFingerprint(item));
       this.#mediaIds.add(item.id);
     }
   }
@@ -108,7 +113,7 @@ export class MasonryFlowModel {
     }
     validateUniqueIds(items);
 
-    const nextFingerprints = items.map(layoutFingerprint);
+    const nextFingerprints = items.map(mediaVisualFingerprint);
     const canAppend =
       this.#sessionId === sessionId &&
       this.#fingerprints.length <= nextFingerprints.length &&
@@ -148,7 +153,7 @@ export class MasonryFlowModel {
     const visualItems = [];
 
     for (const item of items) {
-      const projection = projectVisual(item);
+      const projection = projectMediaVisual(item);
       if (projection.kind === "deferred") {
         this.#deferredMedia.push({
           mediaId: item.id,
@@ -183,7 +188,7 @@ export class MasonryFlowModel {
     const visualItems = [];
 
     for (const item of items) {
-      const projection = projectVisual(item);
+      const projection = projectMediaVisual(item);
       if (projection.kind === "deferred") {
         nextDeferred.push({ mediaId: item.id, reason: projection.reason });
         continue;
@@ -204,45 +209,13 @@ export class MasonryFlowModel {
     this.#viewportIndex = nextViewportIndex;
     this.#sessionId = sessionId;
     this.#items = items.map(cloneMediaItem);
-    this.#fingerprints = items.map(layoutFingerprint);
+    this.#fingerprints = items.map(mediaVisualFingerprint);
     this.#deferredMedia = nextDeferred;
     this.#mediaIds.clear();
     for (const item of items) {
       this.#mediaIds.add(item.id);
     }
   }
-}
-
-type VisualProjection =
-  | { kind: "visual"; width: number; height: number }
-  | { kind: "deferred"; reason: DeferredMediaReason };
-
-function projectVisual(item: MediaItem): VisualProjection {
-  if (item.visual === null) {
-    return { kind: "deferred", reason: "missing-visual" };
-  }
-
-  if (
-    !Number.isFinite(item.visual.width) ||
-    item.visual.width <= 0 ||
-    !Number.isFinite(item.visual.height) ||
-    item.visual.height <= 0
-  ) {
-    return { kind: "deferred", reason: "invalid-visual" };
-  }
-
-  return {
-    kind: "visual",
-    width: item.visual.width,
-    height: item.visual.height,
-  };
-}
-
-function layoutFingerprint(item: MediaItem): string {
-  if (item.visual === null) {
-    return `${item.id}:missing`;
-  }
-  return `${item.id}:${item.visual.width}:${item.visual.height}`;
 }
 
 function prefixEquals(
