@@ -31,7 +31,6 @@ impl ScanRegistry {
             .sessions
             .lock()
             .map_err(|_| ScanCommandError::internal("scan registry lock poisoned"))?;
-
         if sessions.contains_key(session_id) {
             return Err(ScanCommandError::session_exists(session_id));
         }
@@ -60,7 +59,7 @@ impl ScanRegistry {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct CancellationToken(Arc<AtomicBool>);
 
 impl CancellationProbe for CancellationToken {
@@ -79,7 +78,12 @@ pub struct StartScanRequestDto {
 }
 
 #[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "event", content = "data")]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "event",
+    content = "data"
+)]
 pub enum ScanEventDto {
     Started {
         session_id: String,
@@ -116,14 +120,12 @@ pub struct MediaItemDto {
 }
 
 #[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct VisualMetadataDto {
     width: u32,
     height: u32,
 }
 
 #[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ScanWarningDto {
     path: Option<String>,
     message: String,
@@ -138,7 +140,6 @@ pub struct ScanSummaryDto {
 }
 
 #[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ScanCommandError {
     code: String,
     message: String,
@@ -217,11 +218,12 @@ pub async fn start_scan(
         scanner.scan(&scan_request, &mut sink, &cancellation)
     });
 
-    let result = task
-        .await
-        .map_err(|error| ScanCommandError::internal(format!("scan task failed: {error}")))?;
+    let result = task.await;
     registry.remove(&session_id);
-    result.map_err(Into::into)
+
+    let scan_result = result
+        .map_err(|error| ScanCommandError::internal(format!("scan task failed: {error}")))?;
+    scan_result.map_err(Into::into)
 }
 
 #[tauri::command]
