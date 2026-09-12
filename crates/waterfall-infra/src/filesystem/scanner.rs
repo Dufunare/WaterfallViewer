@@ -1,10 +1,10 @@
 use std::{mem, path::Path, time::UNIX_EPOCH};
 
+use walkdir::WalkDir;
 use waterfall_core::{
     CancellationProbe, MediaId, MediaItem, MediaScanner, ScanEvent, ScanEventSink, ScanFailure,
     ScanRequest, ScanSummary, ScanWarning,
 };
-use walkdir::WalkDir;
 
 use crate::classification::classify_path;
 
@@ -104,11 +104,7 @@ impl MediaScanner for LocalFilesystemScanner {
                 .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64);
 
             let item = MediaItem {
-                id: MediaId::new(format!(
-                    "{}:{}",
-                    request.source.id.as_str(),
-                    relative_path
-                )),
+                id: MediaId::new(format!("{}:{}", request.source.id.as_str(), relative_path)),
                 source_id: request.source.id.clone(),
                 name: entry.file_name().to_string_lossy().into_owned(),
                 relative_path,
