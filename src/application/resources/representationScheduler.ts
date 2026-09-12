@@ -44,6 +44,8 @@ interface PendingJob {
 interface QueueEntry {
   job: PendingJob;
   revision: number;
+  rank: number;
+  sequence: number;
 }
 
 const DEFAULT_MAX_CONCURRENT = 6;
@@ -101,6 +103,7 @@ export class RepresentationScheduler {
       this.pushQueueEntry(job);
     }
 
+    const activeJob = job;
     const promise = new Promise<ThumbnailRepresentation>((resolve, reject) => {
       const subscriberId = this.nextSubscriberId++;
       const subscriber: Subscriber = {
@@ -111,13 +114,13 @@ export class RepresentationScheduler {
 
       if (request.signal !== undefined) {
         const abortListener = () => {
-          this.cancelSubscriber(job, subscriberId);
+          this.cancelSubscriber(activeJob, subscriberId);
         };
         subscriber.abortListener = abortListener;
         request.signal.addEventListener("abort", abortListener, { once: true });
       }
 
-      job.subscribers.set(subscriberId, subscriber);
+      activeJob.subscribers.set(subscriberId, subscriber);
     });
 
     this.pump();
@@ -206,7 +209,12 @@ export class RepresentationScheduler {
   }
 
   private pushQueueEntry(job: PendingJob): void {
-    const entry: QueueEntry = { job, revision: job.revision };
+    const entry: QueueEntry = {
+      job,
+      revision: job.revision,
+      rank: priorityRank(job.priority),
+      sequence: job.sequence,
+    };
     this.queue.push(entry);
     this.siftUp(this.queue.length - 1);
   }
@@ -303,10 +311,8 @@ function priorityRank(priority: RepresentationPriority): number {
 }
 
 function comesBefore(left: QueueEntry, right: QueueEntry): boolean {
-  const priorityDifference =
-    priorityRank(left.job.priority) - priorityRank(right.job.priority);
-  if (priorityDifference !== 0) {
-    return priorityDifference > 0;
+  if (left.rank !== right.rank) {
+    return left.rank > right.rank;
   }
-  return left.job.sequence < right.job.sequence;
+  return left.sequence < right.sequence;
 }
