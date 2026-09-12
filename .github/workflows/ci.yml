@@ -15,8 +15,69 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      frontend: ${{ steps.filter.outputs.frontend }}
+      rust_core: ${{ steps.filter.outputs.rust_core }}
+      tauri_rust: ${{ steps.filter.outputs.tauri_rust }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Classify changed paths
+        id: filter
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [[ "$EVENT_NAME" != "pull_request" ]]; then
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+            echo "rust_core=true" >> "$GITHUB_OUTPUT"
+            echo "tauri_rust=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          frontend=false
+          rust_core=false
+          tauri_rust=false
+
+          while IFS= read -r path; do
+            echo "changed: $path"
+            case "$path" in
+              .github/workflows/*)
+                frontend=true
+                rust_core=true
+                tauri_rust=true
+                ;;
+              src/*|tests/*|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|.npmrc|index.html|vite.config.*|tsconfig*.json)
+                frontend=true
+                ;;
+              crates/*)
+                rust_core=true
+                tauri_rust=true
+                ;;
+              src-tauri/*)
+                tauri_rust=true
+                ;;
+              Cargo.toml|Cargo.lock|rust-toolchain|rust-toolchain.toml)
+                rust_core=true
+                tauri_rust=true
+                ;;
+            esac
+          done < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+
+          echo "frontend=$frontend" >> "$GITHUB_OUTPUT"
+          echo "rust_core=$rust_core" >> "$GITHUB_OUTPUT"
+          echo "tauri_rust=$tauri_rust" >> "$GITHUB_OUTPUT"
+
   rust-core:
     name: Rust core
+    needs: changes
+    if: needs.changes.outputs.rust_core == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -35,6 +96,8 @@ jobs:
 
   frontend:
     name: Frontend
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -55,6 +118,8 @@ jobs:
 
   tauri-rust:
     name: Tauri Rust
+    needs: changes
+    if: needs.changes.outputs.tauri_rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
