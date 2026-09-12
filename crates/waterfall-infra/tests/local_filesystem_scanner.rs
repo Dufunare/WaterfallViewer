@@ -137,6 +137,46 @@ fn populates_visual_metadata_from_image_header_without_full_decode() {
 }
 
 #[test]
+fn populates_visual_metadata_from_video_container_without_frame_decode() {
+    let directory = tempdir().expect("temp directory");
+    let tkhd = iso_box(*b"tkhd", tkhd_payload(1920, 1080));
+    let hdlr = iso_box(*b"hdlr", hdlr_payload(*b"vide"));
+    let mdia = iso_box(*b"mdia", hdlr);
+    let trak = iso_box(*b"trak", [tkhd, mdia].concat());
+    let moov = iso_box(*b"moov", trak);
+    let mdat = iso_box(*b"mdat", vec![0x55; 1024]);
+    let bytes = [mdat, moov].concat();
+    fs::write(directory.path().join("header-only.mp4"), bytes).expect("mp4 container");
+
+    let request = ScanRequest::new(
+        "session-video-metadata",
+        MediaSource::new(
+            SourceId::new("source-1"),
+            directory.path().to_string_lossy().into_owned(),
+        ),
+        16,
+    );
+    let mut sink = RecordingSink::default();
+
+    LocalFilesystemScanner::new()
+        .scan(&request, &mut sink, &TestCancellation::new(false))
+        .expect("scan succeeds");
+
+    let item = sink.events.iter().find_map(|event| match event {
+        ScanEvent::Batch { items, .. } => items.first(),
+        _ => None,
+    });
+
+    assert_eq!(
+        item.expect("scanned video").visual,
+        Some(VisualMetadata {
+            width: 1920,
+            height: 1080,
+        })
+    );
+}
+
+#[test]
 fn cancellation_finishes_with_cancelled_event() {
     let directory = tempdir().expect("temp directory");
     fs::write(directory.path().join("photo.jpg"), b"jpg").expect("photo");
@@ -167,4 +207,29 @@ fn cancellation_finishes_with_cancelled_event() {
         .events
         .iter()
         .any(|event| matches!(event, ScanEvent::Finished { .. })));
+}
+
+fn iso_box(kind: [u8; 4], payload: Vec<u8>) -> Vec<u8> {
+    let size = 8usize.checked_add(payload.len()).expect("box size");
+    let mut output = Vec::with_capacity(size);
+    output.extend_from_slice(&(size as u32).to_be_bytes());
+    output.extend_from_slice(&kind);
+    output.extend_from_slice(&payload);
+    output
+}
+
+fn tkhd_payload(width: u32, height: u32) -> Vec<u8> {
+    let mut payload = vec![0u8; 44];
+    payload[0..4].copy_from_slice(&(1i32 << 16).to_be_bytes());
+    payload[16..20].copy_from_slice(&(1i32 << 16).to_be_bytes());
+    payload[32..36].copy_from_slice(&(1i32 << 30).to_be_bytes());
+    payload[36..40].copy_from_slice(&(width << 16).to_be_bytes());
+    payload[40..44].copy_from_slice(&(height << 16).to_be_bytes());
+    payload
+}
+
+fn hdlr_payload(handler: [u8; 4]) -> Vec<u8> {
+    let mut payload = vec![0u8; 24];
+    payload[8..12].copy_from_slice(&handler);
+    payload
 }
