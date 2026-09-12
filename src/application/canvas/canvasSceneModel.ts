@@ -10,7 +10,12 @@ import {
   type CanvasAtlasConfig,
   type CanvasAtlasNode,
 } from "../../layout/canvas/canvasAtlasLayout";
-import type { Point2D, Rect2D, Size2D } from "../../layout/canvas/camera2d";
+import type {
+  Camera2DSnapshot,
+  Point2D,
+  Rect2D,
+  Size2D,
+} from "../../layout/canvas/camera2d";
 
 export interface CanvasSceneItem {
   mediaId: string;
@@ -74,6 +79,10 @@ export class CanvasSceneModel {
     return this.#builder.size;
   }
 
+  get cameraSnapshot(): Camera2DSnapshot {
+    return this.#viewport.cameraSnapshot;
+  }
+
   setViewport(viewport: Size2D): void {
     this.#viewport.setViewport(viewport);
   }
@@ -132,7 +141,7 @@ export class CanvasSceneModel {
       prefixEquals(this.#fingerprints, nextFingerprints);
 
     if (!canAppend) {
-      this.#rebuild(sessionId, items);
+      this.#rebuild(sessionId, items, this.#sessionId === sessionId);
       return;
     }
 
@@ -207,12 +216,24 @@ export class CanvasSceneModel {
     };
   }
 
-  #rebuild(sessionId: string, items: readonly MediaItem[]): void {
+  #rebuild(
+    sessionId: string,
+    items: readonly MediaItem[],
+    preserveCamera: boolean,
+  ): void {
+    const previousCamera = this.#viewport.cameraSnapshot;
     const nextBuilder = new CanvasAtlasLayoutBuilder(this.#options.atlas);
     const nextViewport = new CanvasViewportModel<CanvasAtlasNode>(
       this.#options.viewport,
     );
-    nextViewport.setViewport(this.#viewport.cameraSnapshot.viewport);
+    nextViewport.setViewport(previousCamera.viewport);
+    if (preserveCamera) {
+      nextViewport.setCenter(previousCamera.center);
+      nextViewport.zoomAtScreen(previousCamera.zoom, {
+        x: previousCamera.viewport.width / 2,
+        y: previousCamera.viewport.height / 2,
+      });
+    }
 
     const visuals = items.map((item) => projectCanvasVisual(item));
     const nodes = nextBuilder.append(
