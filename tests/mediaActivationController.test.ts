@@ -31,7 +31,10 @@ class FakeScanPort implements MediaScanPort {
 }
 
 class FakeResourcePort implements MediaResourcePort {
+  readonly resolvedKeys: string[] = [];
+
   uriFor(resourceKey: string): string {
+    this.resolvedKeys.push(resourceKey);
     return `test-media://${resourceKey}`;
   }
 }
@@ -54,7 +57,8 @@ describe("MediaActivationController", () => {
   it("resolves an original resource URI only when media is explicitly activated", () => {
     const scanPort = new FakeScanPort();
     const sessions = new MediaSessionController(scanPort, () => "session-1");
-    const activation = new MediaActivationController(sessions, new FakeResourcePort());
+    const resources = new FakeResourcePort();
+    const activation = new MediaActivationController(sessions, resources);
 
     sessions.openSource({ id: "source-1", locator: "local-source/1" });
     scanPort.emit(0, { event: "started", data: { sessionId: "session-1" } });
@@ -64,7 +68,9 @@ describe("MediaActivationController", () => {
     });
 
     expect(activation.snapshot).toBeNull();
+    expect(resources.resolvedKeys).toEqual([]);
     expect(activation.activate("clip")).toBe(true);
+    expect(resources.resolvedKeys).toEqual(["1/clip"]);
     expect(activation.snapshot).toEqual({
       sessionId: "session-1",
       mediaId: "clip",
@@ -72,6 +78,98 @@ describe("MediaActivationController", () => {
       relativePath: "nested/clip.mp4",
       kind: "video",
       uri: "test-media://1/clip",
+      position: 1,
+      totalItems: 1,
+      hasPrevious: false,
+      hasNext: false,
+    });
+
+    activation.dispose();
+  });
+
+  it("navigates adjacent media in stable scan order and stops at the edges", () => {
+    const scanPort = new FakeScanPort();
+    const sessions = new MediaSessionController(scanPort, () => "session-1");
+    const activation = new MediaActivationController(sessions, new FakeResourcePort());
+
+    sessions.openSource({ id: "source-1", locator: "local-source/1" });
+    scanPort.emit(0, {
+      event: "batch",
+      data: {
+        sessionId: "session-1",
+        items: [media("first", "image"), media("second"), media("third", "audio")],
+      },
+    });
+
+    expect(activation.activate("second")).toBe(true);
+    expect(activation.snapshot).toMatchObject({
+      mediaId: "second",
+      position: 2,
+      totalItems: 3,
+      hasPrevious: true,
+      hasNext: true,
+    });
+
+    expect(activation.activatePrevious()).toBe(true);
+    expect(activation.snapshot).toMatchObject({
+      mediaId: "first",
+      position: 1,
+      hasPrevious: false,
+      hasNext: true,
+    });
+    expect(activation.activatePrevious()).toBe(false);
+    expect(activation.snapshot?.mediaId).toBe("first");
+
+    expect(activation.activateNext()).toBe(true);
+    expect(activation.snapshot?.mediaId).toBe("second");
+    expect(activation.activateNext()).toBe(true);
+    expect(activation.snapshot).toMatchObject({
+      mediaId: "third",
+      position: 3,
+      hasPrevious: true,
+      hasNext: false,
+    });
+    expect(activation.activateNext()).toBe(false);
+    expect(activation.snapshot?.mediaId).toBe("third");
+
+    activation.dispose();
+  });
+
+  it("makes newly streamed media navigable without moving the current item", () => {
+    const scanPort = new FakeScanPort();
+    const sessions = new MediaSessionController(scanPort, () => "session-1");
+    const activation = new MediaActivationController(sessions, new FakeResourcePort());
+
+    sessions.openSource({ id: "source-1", locator: "local-source/1" });
+    scanPort.emit(0, {
+      event: "batch",
+      data: { sessionId: "session-1", items: [media("first")] },
+    });
+    activation.activate("first");
+    expect(activation.snapshot).toMatchObject({
+      mediaId: "first",
+      position: 1,
+      totalItems: 1,
+      hasNext: false,
+    });
+
+    scanPort.emit(0, {
+      event: "batch",
+      data: { sessionId: "session-1", items: [media("second")] },
+    });
+    expect(activation.snapshot).toMatchObject({
+      mediaId: "first",
+      position: 1,
+      totalItems: 2,
+      hasNext: true,
+    });
+    expect(activation.activateNext()).toBe(true);
+    expect(activation.snapshot).toMatchObject({
+      mediaId: "second",
+      position: 2,
+      totalItems: 2,
+      hasPrevious: true,
+      hasNext: false,
     });
 
     activation.dispose();
@@ -82,6 +180,8 @@ describe("MediaActivationController", () => {
     const activation = new MediaActivationController(sessions, new FakeResourcePort());
 
     expect(activation.activate("missing")).toBe(false);
+    expect(activation.activatePrevious()).toBe(false);
+    expect(activation.activateNext()).toBe(false);
     expect(activation.snapshot).toBeNull();
     activation.dispose();
   });
@@ -102,6 +202,7 @@ describe("MediaActivationController", () => {
 
     sessions.openSource({ id: "source-2", locator: "local-source/2" });
     expect(activation.snapshot).toBeNull();
+    expect(activation.activateNext()).toBe(false);
     activation.dispose();
   });
 
@@ -135,5 +236,7 @@ describe("MediaActivationController", () => {
     expect(() => activation.activate(" ")).toThrow(/mediaId/);
     activation.dispose();
     expect(() => activation.activate("clip")).toThrow(/disposed/);
+    expect(() => activation.activatePrevious()).toThrow(/disposed/);
+    expect(() => activation.activateNext()).toThrow(/disposed/);
   });
 });
