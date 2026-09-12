@@ -49,6 +49,18 @@ export class MediaIndex {
     return this.#byId.has(id);
   }
 
+  at(index: number): MediaItem | undefined {
+    if (!Number.isInteger(index) || index < 0 || index >= this.#order.length) {
+      return undefined;
+    }
+    const id = this.#order[index];
+    return this.#byId.get(id);
+  }
+
+  indexOf(id: string): number {
+    return this.#order.indexOf(id);
+  }
+
   ids(): readonly string[] {
     return [...this.#order];
   }
@@ -330,20 +342,25 @@ function isTerminal(status: ScanStatus): boolean {
 
 function normalizeSessionError(error: unknown): SessionError {
   if (typeof error === "object" && error !== null) {
-    const candidate = error as { code?: unknown; message?: unknown };
-    const code = typeof candidate.code === "string" ? candidate.code : null;
-    if (typeof candidate.message === "string") {
-      return { code, message: candidate.message };
+    const maybeCode = "code" in error ? Reflect.get(error, "code") : null;
+    const maybeMessage = "message" in error ? Reflect.get(error, "message") : null;
+    if (typeof maybeMessage === "string") {
+      return {
+        code: typeof maybeCode === "string" ? maybeCode : null,
+        message: maybeMessage,
+      };
     }
   }
 
-  if (error instanceof Error) {
-    return { code: null, message: error.message };
-  }
-
-  return { code: null, message: String(error) };
+  return {
+    code: null,
+    message: error instanceof Error ? error.message : String(error),
+  };
 }
 
 function defaultSessionIdFactory(): string {
-  return globalThis.crypto.randomUUID();
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `scan-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
