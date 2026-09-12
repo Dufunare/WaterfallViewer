@@ -2,8 +2,8 @@ use std::{mem, path::Path, time::UNIX_EPOCH};
 
 use walkdir::WalkDir;
 use waterfall_core::{
-    CancellationProbe, MediaId, MediaItem, MediaScanner, ScanEvent, ScanEventSink, ScanFailure,
-    ScanRequest, ScanSummary, ScanWarning, VisualMetadataReader,
+    CancellationProbe, MediaFileFingerprint, MediaId, MediaItem, MediaScanner, ScanEvent,
+    ScanEventSink, ScanFailure, ScanRequest, ScanSummary, ScanWarning, VisualMetadataReader,
 };
 
 use crate::{classification::classify_path, metadata::HeaderVisualMetadataReader};
@@ -115,16 +115,22 @@ where
                 .unwrap_or_else(|_| path_to_portable_string(entry.path()));
             let absolute_locator = path_to_portable_string(entry.path());
 
-            let modified_at_ms = metadata
+            let modified_since_epoch = metadata
                 .modified()
                 .ok()
-                .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+                .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok());
+            let modified_at_ms = modified_since_epoch
                 .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64);
+            let fingerprint = MediaFileFingerprint {
+                file_size: metadata.len(),
+                modified_at_unix_ns: modified_since_epoch.map(|duration| duration.as_nanos()),
+            };
 
-            let visual = match self
-                .metadata_reader
-                .read_visual_metadata(&absolute_locator, &kind)
-            {
+            let visual = match self.metadata_reader.read_visual_metadata_with_fingerprint(
+                &absolute_locator,
+                &kind,
+                Some(fingerprint),
+            ) {
                 Ok(visual) => visual,
                 Err(error) => {
                     sink.emit(ScanEvent::Warning {

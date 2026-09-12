@@ -12,13 +12,17 @@ use waterfall_core::{
     CancellationProbe, MediaItem, MediaKind, MediaScanner, MediaSource, ScanEvent, ScanEventSink,
     ScanFailure, ScanFailureKind, ScanRequest, ScanSummary, ScanWarning, SourceId, VisualMetadata,
 };
-use waterfall_infra::LocalFilesystemScanner;
+use waterfall_infra::{
+    CachingVisualMetadataReader, HeaderVisualMetadataReader, InMemoryVisualMetadataCache,
+    LocalFilesystemScanner,
+};
 
 use crate::{local_source::LocalSourceRegistry, media_resource::MediaResourceRegistry};
 
 #[derive(Clone, Default)]
 pub struct ScanRegistry {
     sessions: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    visual_metadata_cache: Arc<InMemoryVisualMetadataCache>,
 }
 
 impl ScanRegistry {
@@ -257,6 +261,7 @@ pub async fn start_scan(
 
     let registry = registry.inner().clone();
     let resources = resources.inner().clone();
+    let metadata_cache = registry.visual_metadata_cache.clone();
     let session_id = request.session_id.clone();
     let cancellation = registry.register(&session_id)?;
     let scan_request = ScanRequest::new(
@@ -279,7 +284,9 @@ pub async fn start_scan(
 
     let scan_resources = resources.clone();
     let task = tauri::async_runtime::spawn_blocking(move || {
-        let scanner = LocalFilesystemScanner::new();
+        let metadata_reader =
+            CachingVisualMetadataReader::new(HeaderVisualMetadataReader::new(), metadata_cache);
+        let scanner = LocalFilesystemScanner::with_metadata_reader(metadata_reader);
         let mut sink = ChannelScanSink::new(on_event, scan_resources);
         scanner.scan(&scan_request, &mut sink, &cancellation)
     });
@@ -408,6 +415,16 @@ mod tests {
         registry
             .register("session-1")
             .expect("session id reusable after removal");
+    }
+
+    #[test]
+    fn cloned_registry_shares_visual_metadata_cache() {
+        let registry = ScanRegistry::default();
+        let clone = registry.clone();
+        assert!(Arc::ptr_eq(
+            &registry.visual_metadata_cache,
+            &clone.visual_metadata_cache
+        ));
     }
 
     #[test]
