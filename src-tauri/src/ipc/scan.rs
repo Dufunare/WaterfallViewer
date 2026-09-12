@@ -221,8 +221,8 @@ pub async fn start_scan(
     let result = task.await;
     registry.remove(&session_id);
 
-    let scan_result = result
-        .map_err(|error| ScanCommandError::internal(format!("scan task failed: {error}")))?;
+    let scan_result =
+        result.map_err(|error| ScanCommandError::internal(format!("scan task failed: {error}")))?;
     scan_result.map_err(Into::into)
 }
 
