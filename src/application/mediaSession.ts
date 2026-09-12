@@ -31,6 +31,7 @@ export interface ScanState {
 export class MediaIndex {
   readonly #byId = new Map<string, MediaItem>();
   readonly #order: string[] = [];
+  readonly #orderIndexById = new Map<string, number>();
   #replacementRevision = 0;
 
   get size(): number {
@@ -58,7 +59,7 @@ export class MediaIndex {
   }
 
   indexOf(id: string): number {
-    return this.#order.indexOf(id);
+    return this.#orderIndexById.get(id) ?? -1;
   }
 
   ids(): readonly string[] {
@@ -85,7 +86,9 @@ export class MediaIndex {
   upsertMany(items: readonly MediaItem[]): void {
     for (const item of items) {
       if (!this.#byId.has(item.id)) {
+        const index = this.#order.length;
         this.#order.push(item.id);
+        this.#orderIndexById.set(item.id, index);
       } else {
         this.#replacementRevision += 1;
       }
