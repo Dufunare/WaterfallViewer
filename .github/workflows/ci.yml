@@ -12,7 +12,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   rust-core:
@@ -38,8 +38,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.ref || github.ref }}
       - uses: pnpm/action-setup@v4
         with:
           version: 10
@@ -48,20 +46,8 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - name: Install and refresh lockfile
-        run: pnpm install --no-frozen-lockfile
-      - name: Commit refreshed pnpm lockfile
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'feat/frontend-media-session'
-        run: |
-          if git diff --quiet -- pnpm-lock.yaml; then
-            echo "pnpm lockfile is already current"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add pnpm-lock.yaml
-          git commit -m "chore: refresh pnpm lockfile"
-          git push origin HEAD:${{ github.event.pull_request.head.ref }}
+      - name: Install
+        run: pnpm install --frozen-lockfile
       - name: Test
         run: pnpm test
       - name: Build
