@@ -57,6 +57,22 @@ export class MasonryFlowModel {
     return this.#items.length;
   }
 
+  get layoutItemCount(): number {
+    return this.#builder.size;
+  }
+
+  get deferredCount(): number {
+    return this.#deferredMedia.length;
+  }
+
+  get totalHeight(): number {
+    return this.#builder.totalHeight;
+  }
+
+  get columnWidth(): number {
+    return this.#builder.columnWidth;
+  }
+
   configure(config: MasonryLayoutConfig): void {
     if (sameConfig(this.#config, config)) {
       return;
