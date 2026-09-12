@@ -30,10 +30,10 @@ export interface MasonryFlowSnapshot {
  * Application-facing projection from an ordered media session into Masonry
  * geometry plus viewport virtualization.
  *
- * The common scan path is append-only, so `sync` extends both layout and
- * viewport indexes incrementally. If an already-seen item's layout-relevant
- * visual metadata changes, the source order changes, the session changes, or
- * layout configuration changes, the model rebuilds deterministically.
+ * The common scan path can call `append` with only the newly arrived batch,
+ * keeping layout and viewport indexing O(batch). `sync` remains the defensive
+ * full-state reconciliation path for replacements, reordering, session
+ * changes, or callers that do not have append information.
  */
 export class MasonryFlowModel {
   #config: MasonryLayoutConfig;
@@ -43,6 +43,7 @@ export class MasonryFlowModel {
   #items: MediaItem[] = [];
   #fingerprints: string[] = [];
   #deferredMedia: DeferredMedia[] = [];
+  readonly #mediaIds = new Set<string>();
 
   constructor(config: MasonryLayoutConfig) {
     this.#builder = new MasonryLayoutBuilder(config);
@@ -81,6 +82,26 @@ export class MasonryFlowModel {
     this.#rebuild(this.#sessionId, this.#items, config);
   }
 
+  append(sessionId: string, items: readonly MediaItem[]): void {
+    if (sessionId.trim().length === 0) {
+      throw new RangeError("sessionId must not be empty");
+    }
+    if (this.#sessionId !== sessionId) {
+      throw new Error("append session must match the active flow session");
+    }
+    validateAppendBatch(items, this.#mediaIds);
+    if (items.length === 0) {
+      return;
+    }
+
+    this.#appendItems(items);
+    for (const item of items) {
+      this.#items.push(cloneMediaItem(item));
+      this.#fingerprints.push(layoutFingerprint(item));
+      this.#mediaIds.add(item.id);
+    }
+  }
+
   sync(sessionId: string, items: readonly MediaItem[]): void {
     if (sessionId.trim().length === 0) {
       throw new RangeError("sessionId must not be empty");
@@ -101,12 +122,8 @@ export class MasonryFlowModel {
     const previousLength = this.#items.length;
     const addedItems = items.slice(previousLength);
     if (addedItems.length > 0) {
-      this.#appendItems(addedItems);
+      this.append(sessionId, addedItems);
     }
-
-    this.#sessionId = sessionId;
-    this.#items = items.map(cloneMediaItem);
-    this.#fingerprints = nextFingerprints;
   }
 
   queryVisible(
@@ -189,6 +206,10 @@ export class MasonryFlowModel {
     this.#items = items.map(cloneMediaItem);
     this.#fingerprints = items.map(layoutFingerprint);
     this.#deferredMedia = nextDeferred;
+    this.#mediaIds.clear();
+    for (const item of items) {
+      this.#mediaIds.add(item.id);
+    }
   }
 }
 
@@ -246,6 +267,22 @@ function validateUniqueIds(items: readonly MediaItem[]): void {
       throw new RangeError(`duplicate media id: ${item.id}`);
     }
     ids.add(item.id);
+  }
+}
+
+function validateAppendBatch(
+  items: readonly MediaItem[],
+  existingIds: ReadonlySet<string>,
+): void {
+  const batchIds = new Set<string>();
+  for (const item of items) {
+    if (item.id.trim().length === 0) {
+      throw new RangeError("media id must not be empty");
+    }
+    if (existingIds.has(item.id) || batchIds.has(item.id)) {
+      throw new RangeError(`duplicate media id: ${item.id}`);
+    }
+    batchIds.add(item.id);
   }
 }
 
