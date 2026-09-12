@@ -9,6 +9,7 @@ import {
   RepresentationRequestCancelledError,
   RepresentationScheduler,
   type RepresentationPriority,
+  type ThumbnailRepresentationLease,
 } from "../resources/representationScheduler";
 import {
   CanvasSceneModel,
@@ -95,6 +96,7 @@ type RepresentationState =
       sessionId: string;
       requestKey: string;
       uri: string;
+      lease: ThumbnailRepresentationLease;
     }
   | {
       status: "error";
@@ -290,9 +292,7 @@ export class CanvasBrowserController {
         item.lod === "placeholder" ||
         !supportsImageRepresentation(item.kind)
       ) {
-        if (state.status === "loading") {
-          state.abortController.abort();
-        }
+        this.#releaseRepresentationState(state);
         this.#representationStates.delete(mediaId);
       }
     }
@@ -346,8 +346,8 @@ export class CanvasBrowserController {
     const requestKey = JSON.stringify([item.resourceKey, maxEdge]);
     const existing = this.#representationStates.get(item.mediaId);
 
-    if (existing !== undefined && existing.sessionId === sessionId) {
-      if (existing.requestKey === requestKey) {
+    if (existing !== undefined) {
+      if (existing.sessionId === sessionId && existing.requestKey === requestKey) {
         if (
           existing.status !== "loading" ||
           priorityRank(priority) <= priorityRank(existing.priority)
@@ -355,8 +355,8 @@ export class CanvasBrowserController {
           return;
         }
         existing.abortController.abort();
-      } else if (existing.status === "loading") {
-        existing.abortController.abort();
+      } else {
+        this.#releaseRepresentationState(existing);
       }
     }
 
@@ -370,7 +370,7 @@ export class CanvasBrowserController {
     };
     this.#representationStates.set(item.mediaId, state);
 
-    let request: Promise<{ resourceKey: string; width: number; height: number }>;
+    let request: Promise<ThumbnailRepresentationLease>;
     try {
       request = this.#representationScheduler.requestThumbnail({
         resourceKey: item.resourceKey,
@@ -391,6 +391,7 @@ export class CanvasBrowserController {
     void request.then(
       (representation) => {
         if (this.#representationStates.get(item.mediaId) !== state) {
+          representation.release();
           return;
         }
         try {
@@ -400,8 +401,10 @@ export class CanvasBrowserController {
             sessionId,
             requestKey,
             uri,
+            lease: representation,
           });
         } catch (error) {
+          representation.release();
           this.#representationStates.set(item.mediaId, {
             status: "error",
             sessionId,
@@ -467,11 +470,17 @@ export class CanvasBrowserController {
     };
   }
 
+  #releaseRepresentationState(state: RepresentationState): void {
+    if (state.status === "loading") {
+      state.abortController.abort();
+    } else if (state.status === "ready") {
+      state.lease.release();
+    }
+  }
+
   #cancelAllRepresentations(): void {
     for (const state of this.#representationStates.values()) {
-      if (state.status === "loading") {
-        state.abortController.abort();
-      }
+      this.#releaseRepresentationState(state);
     }
     this.#representationStates.clear();
   }
