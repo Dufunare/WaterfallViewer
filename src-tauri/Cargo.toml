@@ -21,6 +21,9 @@ sha2 = "0.10"
 waterfall-core = { path = "../crates/waterfall-core" }
 waterfall-infra = { path = "../crates/waterfall-infra" }
 
+[dev-dependencies]
+tempfile = "3.13"
+
 [profile.release]
 codegen-units = 1
 lto = true
