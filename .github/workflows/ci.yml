@@ -49,7 +49,7 @@ jobs:
           node-version: 22
           cache: pnpm
       - name: Install and refresh lockfile
-        run: pnpm install
+        run: pnpm install --no-frozen-lockfile
       - name: Commit refreshed pnpm lockfile
         if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'feat/frontend-media-session'
         run: |
