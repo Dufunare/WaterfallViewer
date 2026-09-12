@@ -15,6 +15,9 @@ import type {
 const props = defineProps<{
   browser: MediaBrowserController;
 }>();
+const emit = defineEmits<{
+  activate: [mediaId: string];
+}>();
 
 const viewportElement = ref<HTMLElement | null>(null);
 const snapshot = shallowRef(props.browser.snapshot);
@@ -95,7 +98,8 @@ onBeforeUnmount(() => {
         class="flow-tile"
         :class="{ overscan: tile.priority === 'overscan' }"
         :style="tileStyle(tile)"
-        :title="tile.relativePath"
+        :title="`${tile.relativePath} — double-click to open`"
+        @dblclick="emit('activate', tile.mediaId)"
       >
         <img
           v-if="tile.thumbnailStatus === 'ready' && tile.thumbnailUri"
@@ -146,6 +150,7 @@ onBeforeUnmount(() => {
   background: var(--wf-surface-raised);
   contain: layout paint style;
   content-visibility: auto;
+  cursor: default;
 }
 
 .flow-tile.overscan {
