@@ -3,21 +3,38 @@ use std::{mem, path::Path, time::UNIX_EPOCH};
 use walkdir::WalkDir;
 use waterfall_core::{
     CancellationProbe, MediaId, MediaItem, MediaScanner, ScanEvent, ScanEventSink, ScanFailure,
-    ScanRequest, ScanSummary, ScanWarning,
+    ScanRequest, ScanSummary, ScanWarning, VisualMetadataReader,
 };
 
-use crate::classification::classify_path;
+use crate::{classification::classify_path, metadata::HeaderVisualMetadataReader};
 
-#[derive(Debug, Default)]
-pub struct LocalFilesystemScanner;
+#[derive(Debug)]
+pub struct LocalFilesystemScanner<R = HeaderVisualMetadataReader> {
+    metadata_reader: R,
+}
 
-impl LocalFilesystemScanner {
+impl LocalFilesystemScanner<HeaderVisualMetadataReader> {
     pub fn new() -> Self {
-        Self
+        Self::with_metadata_reader(HeaderVisualMetadataReader::new())
     }
 }
 
-impl MediaScanner for LocalFilesystemScanner {
+impl Default for LocalFilesystemScanner<HeaderVisualMetadataReader> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<R> LocalFilesystemScanner<R> {
+    pub fn with_metadata_reader(metadata_reader: R) -> Self {
+        Self { metadata_reader }
+    }
+}
+
+impl<R> MediaScanner for LocalFilesystemScanner<R>
+where
+    R: VisualMetadataReader,
+{
     fn scan(
         &self,
         request: &ScanRequest,
@@ -96,12 +113,30 @@ impl MediaScanner for LocalFilesystemScanner {
                 .strip_prefix(root)
                 .map(path_to_portable_string)
                 .unwrap_or_else(|_| path_to_portable_string(entry.path()));
+            let absolute_locator = path_to_portable_string(entry.path());
 
             let modified_at_ms = metadata
                 .modified()
                 .ok()
                 .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
                 .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64);
+
+            let visual = match self
+                .metadata_reader
+                .read_visual_metadata(&absolute_locator, &kind)
+            {
+                Ok(visual) => visual,
+                Err(error) => {
+                    sink.emit(ScanEvent::Warning {
+                        session_id: session_id.clone(),
+                        warning: ScanWarning {
+                            path: Some(relative_path.clone()),
+                            message: format!("visual metadata unavailable: {error}"),
+                        },
+                    })?;
+                    None
+                }
+            };
 
             let item = MediaItem {
                 id: MediaId::new(format!("{}:{}", request.source.id.as_str(), relative_path)),
@@ -111,7 +146,7 @@ impl MediaScanner for LocalFilesystemScanner {
                 kind,
                 file_size: metadata.len(),
                 modified_at_ms,
-                visual: None,
+                visual,
             };
 
             summary.accepted_media += 1;

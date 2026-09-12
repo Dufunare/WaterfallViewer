@@ -6,7 +6,7 @@ use std::{
 use tempfile::tempdir;
 use waterfall_core::{
     CancellationProbe, MediaScanner, MediaSource, ScanEvent, ScanEventSink, ScanFailure,
-    ScanRequest, SourceId,
+    ScanRequest, SourceId, VisualMetadata,
 };
 use waterfall_infra::LocalFilesystemScanner;
 
@@ -96,6 +96,44 @@ fn recursively_scans_supported_media_and_emits_batches() {
     assert_eq!(summary.discovered_files, 4);
     assert_eq!(summary.accepted_media, 3);
     assert_eq!(summary.emitted_batches, 2);
+}
+
+#[test]
+fn populates_visual_metadata_from_image_header_without_full_decode() {
+    let directory = tempdir().expect("temp directory");
+    let mut png_header = vec![0; 24];
+    png_header[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+    png_header[12..16].copy_from_slice(b"IHDR");
+    png_header[16..20].copy_from_slice(&2560u32.to_be_bytes());
+    png_header[20..24].copy_from_slice(&1440u32.to_be_bytes());
+    fs::write(directory.path().join("header-only.png"), png_header).expect("png header");
+
+    let request = ScanRequest::new(
+        "session-metadata",
+        MediaSource::new(
+            SourceId::new("source-1"),
+            directory.path().to_string_lossy().into_owned(),
+        ),
+        16,
+    );
+    let mut sink = RecordingSink::default();
+
+    LocalFilesystemScanner::new()
+        .scan(&request, &mut sink, &TestCancellation::new(false))
+        .expect("scan succeeds");
+
+    let item = sink.events.iter().find_map(|event| match event {
+        ScanEvent::Batch { items, .. } => items.first(),
+        _ => None,
+    });
+
+    assert_eq!(
+        item.expect("scanned image").visual,
+        Some(VisualMetadata {
+            width: 2560,
+            height: 1440
+        })
+    );
 }
 
 #[test]
