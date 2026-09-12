@@ -124,6 +124,7 @@ export class MasonryBrowserController {
   #viewport: BrowserViewport | null = null;
   #sourceDisplayName: string | null = null;
   #lastSessionId: string | null = null;
+  #lastReplacementRevision = 0;
   #snapshot: MasonryBrowserSnapshot = emptySnapshot();
   #disposed = false;
 
@@ -200,6 +201,7 @@ export class MasonryBrowserController {
     if (sessionId !== this.#lastSessionId) {
       this.#cancelAllThumbnailRequests();
       this.#lastSessionId = sessionId;
+      this.#lastReplacementRevision = 0;
     }
     this.#refresh();
   }
@@ -228,7 +230,21 @@ export class MasonryBrowserController {
       columnCount,
       gap: this.#options.gap,
     });
-    this.#flow.sync(session.id, session.items.values());
+
+    const replacementRevision = session.items.replacementRevision;
+    if (
+      this.#flow.sessionId !== session.id ||
+      this.#flow.itemCount > session.items.size ||
+      replacementRevision !== this.#lastReplacementRevision
+    ) {
+      this.#flow.sync(session.id, session.items.values());
+    } else if (this.#flow.itemCount < session.items.size) {
+      this.#flow.append(
+        session.id,
+        session.items.valuesFrom(this.#flow.itemCount),
+      );
+    }
+    this.#lastReplacementRevision = replacementRevision;
 
     const viewportRect = {
       x: 0,
