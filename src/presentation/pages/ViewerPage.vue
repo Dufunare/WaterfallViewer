@@ -13,6 +13,10 @@ import type {
   MediaBrowserController,
 } from "../../application/browser/mediaBrowserController";
 import type { CanvasBrowserController } from "../../application/canvas/canvasBrowserController";
+import type {
+  MediaQueryController,
+  MediaQuerySnapshot,
+} from "../../application/query/mediaQueryController";
 import type { ViewerWorkspaceController } from "../../application/viewer/viewerWorkspaceController";
 import FlowViewport from "../components/FlowViewport.vue";
 
@@ -21,9 +25,11 @@ const CanvasViewport = defineAsyncComponent(
 );
 
 type ViewerMode = BrowserLayoutMode | "canvas";
+type MediaFilterPreset = "all" | "images" | "video" | "audio";
 
 const props = defineProps<{
   workspace: ViewerWorkspaceController;
+  query: MediaQueryController;
   flowBrowser: MediaBrowserController;
   createCanvasBrowser: () => CanvasBrowserController;
 }>();
@@ -33,10 +39,12 @@ const emit = defineEmits<{
 
 const mode = ref<ViewerMode>(props.flowBrowser.snapshot.layoutMode);
 const workspace = shallowRef(props.workspace.snapshot);
+const queryState = shallowRef<MediaQuerySnapshot>(props.query.snapshot);
 const pickingSource = ref(false);
 const uiError = ref<string | null>(null);
 
 let unsubscribeWorkspace: (() => void) | null = null;
+let unsubscribeQuery: (() => void) | null = null;
 
 const scanStatus = computed(() => workspace.value.scanState?.status ?? null);
 const isScanning = computed(
@@ -66,20 +74,52 @@ const statusLabel = computed(() => {
       return "No source";
   }
 });
-const emptyTitle = computed(() =>
-  workspace.value.sessionId === null
-    ? "Choose a media folder"
-    : "No supported media found",
+const activeFilter = computed<MediaFilterPreset>(() => {
+  const kinds = queryState.value.includedKinds;
+  if (sameKinds(kinds, ["image", "animated-image"])) {
+    return "images";
+  }
+  if (sameKinds(kinds, ["video"])) {
+    return "video";
+  }
+  if (sameKinds(kinds, ["audio"])) {
+    return "audio";
+  }
+  return "all";
+});
+const filterActive = computed(
+  () => queryState.value.includedKinds.length !== 4,
 );
-const emptyCopy = computed(() =>
-  workspace.value.sessionId === null
-    ? "Files are discovered recursively and streamed into the active view as they are found."
-    : "Choose another folder to continue browsing.",
+const filteredEmpty = computed(
+  () =>
+    workspace.value.sessionId !== null &&
+    workspace.value.itemCount > 0 &&
+    queryState.value.matchedItemCount === 0 &&
+    !isScanning.value,
 );
+const emptyTitle = computed(() => {
+  if (workspace.value.sessionId === null) {
+    return "Choose a media folder";
+  }
+  if (filteredEmpty.value) {
+    return "No media matches this filter";
+  }
+  return "No supported media found";
+});
+const emptyCopy = computed(() => {
+  if (workspace.value.sessionId === null) {
+    return "Files are discovered recursively and streamed into the active view as they are found.";
+  }
+  if (filteredEmpty.value) {
+    return "Show all media or choose another media type to continue browsing this folder.";
+  }
+  return "Choose another folder to continue browsing.";
+});
 const showEmptyState = computed(
   () =>
     workspace.value.sessionId === null ||
-    (workspace.value.itemCount === 0 && !isScanning.value),
+    (workspace.value.itemCount === 0 && !isScanning.value) ||
+    filteredEmpty.value,
 );
 const activeError = computed(
   () => uiError.value ?? workspace.value.scanState?.error?.message ?? null,
@@ -94,6 +134,23 @@ function setMode(nextMode: ViewerMode): void {
     props.flowBrowser.setLayoutMode(nextMode);
   }
   mode.value = nextMode;
+}
+
+function setFilter(preset: MediaFilterPreset): void {
+  switch (preset) {
+    case "all":
+      props.query.reset();
+      break;
+    case "images":
+      props.query.setIncludedKinds(["image", "animated-image"]);
+      break;
+    case "video":
+      props.query.setIncludedKinds(["video"]);
+      break;
+    case "audio":
+      props.query.setIncludedKinds(["audio"]);
+      break;
+  }
 }
 
 async function openSource(): Promise<void> {
@@ -121,6 +178,24 @@ async function cancelScan(): Promise<void> {
   }
 }
 
+function handleEmptyAction(): void {
+  if (filteredEmpty.value) {
+    props.query.reset();
+    return;
+  }
+  void openSource();
+}
+
+function sameKinds(
+  actual: readonly string[],
+  expected: readonly string[],
+): boolean {
+  return (
+    actual.length === expected.length &&
+    actual.every((kind, index) => kind === expected[index])
+  );
+}
+
 function normalizeError(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
@@ -138,10 +213,14 @@ onMounted(() => {
   unsubscribeWorkspace = props.workspace.subscribe((snapshot) => {
     workspace.value = snapshot;
   });
+  unsubscribeQuery = props.query.subscribe((snapshot) => {
+    queryState.value = snapshot;
+  });
 });
 
 onBeforeUnmount(() => {
   unsubscribeWorkspace?.();
+  unsubscribeQuery?.();
 });
 </script>
 
@@ -189,6 +268,20 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
+      <div class="media-filters" role="group" aria-label="Media filter">
+        <button
+          v-for="preset in (['all', 'images', 'video', 'audio'] as const)"
+          :key="preset"
+          class="filter-button"
+          :class="{ active: activeFilter === preset }"
+          type="button"
+          :aria-pressed="activeFilter === preset"
+          @click="setFilter(preset)"
+        >
+          {{ preset === "all" ? "All" : preset[0].toUpperCase() + preset.slice(1) }}
+        </button>
+      </div>
+
       <div class="toolbar-stats" aria-live="polite">
         <span
           class="status-dot"
@@ -196,7 +289,12 @@ onBeforeUnmount(() => {
         />
         <span>{{ statusLabel }}</span>
         <span v-if="workspace.sessionId" class="stat-separator">·</span>
-        <span v-if="workspace.sessionId">{{ workspace.itemCount }} media</span>
+        <span v-if="workspace.sessionId">
+          <template v-if="filterActive">
+            {{ queryState.matchedItemCount }} / {{ workspace.itemCount }} media
+          </template>
+          <template v-else>{{ workspace.itemCount }} media</template>
+        </span>
       </div>
 
       <div class="toolbar-actions">
@@ -249,9 +347,9 @@ onBeforeUnmount(() => {
           class="empty-action"
           type="button"
           :disabled="pickingSource"
-          @click="openSource"
+          @click="handleEmptyAction"
         >
-          Open folder
+          {{ filteredEmpty ? "Show all media" : "Open folder" }}
         </button>
       </div>
     </section>
@@ -271,9 +369,9 @@ onBeforeUnmount(() => {
   height: var(--wf-toolbar-height);
   flex: 0 0 var(--wf-toolbar-height);
   display: grid;
-  grid-template-columns: minmax(150px, 1fr) auto auto minmax(190px, 1fr);
+  grid-template-columns: minmax(150px, 1fr) auto auto auto minmax(190px, 1fr);
   align-items: center;
-  gap: 14px;
+  gap: 12px;
   padding: 0 14px;
   border-bottom: 1px solid var(--wf-border);
   background: var(--wf-surface);
@@ -282,6 +380,7 @@ onBeforeUnmount(() => {
 
 .brand-block,
 .viewer-modes,
+.media-filters,
 .toolbar-stats,
 .toolbar-actions {
   min-width: 0;
@@ -309,14 +408,16 @@ onBeforeUnmount(() => {
   color: var(--wf-text-muted);
 }
 
-.viewer-modes {
+.viewer-modes,
+.media-filters {
   padding: 2px;
   border: 1px solid var(--wf-border);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.025);
 }
 
-.mode-button {
+.mode-button,
+.filter-button {
   min-height: 27px;
   padding: 3px 9px;
   border: 0;
@@ -327,7 +428,8 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 
-.mode-button.active {
+.mode-button.active,
+.filter-button.active {
   background: var(--wf-surface-raised);
   color: var(--wf-text);
 }
@@ -463,13 +565,23 @@ onBeforeUnmount(() => {
   font-size: 0.82rem;
 }
 
-@media (max-width: 820px) {
+@media (max-width: 1060px) {
   .viewer-toolbar {
-    grid-template-columns: minmax(120px, 1fr) auto auto;
+    grid-template-columns: minmax(120px, 1fr) auto auto minmax(160px, 1fr);
   }
 
   .toolbar-stats {
     display: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .media-filters {
+    display: none;
+  }
+
+  .viewer-toolbar {
+    grid-template-columns: minmax(120px, 1fr) auto minmax(150px, 1fr);
   }
 }
 
@@ -484,7 +596,8 @@ onBeforeUnmount(() => {
     padding: 0 8px;
   }
 
-  .mode-button {
+  .mode-button,
+  .filter-button {
     padding-inline: 7px;
   }
 }
