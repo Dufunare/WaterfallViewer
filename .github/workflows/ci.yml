@@ -121,12 +121,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.tauri_rust == 'true'
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
@@ -141,30 +137,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-      - name: Format generated Tauri changes
-        run: cargo fmt --manifest-path src-tauri/Cargo.toml
-      - name: Clippy and refresh lockfile
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      - name: Format
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+      - name: Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings
       - name: Test
-        run: cargo test --manifest-path src-tauri/Cargo.toml
-      - name: Commit formatted sources and refreshed lockfile
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        shell: bash
-        run: |
-          if git diff --quiet -- src-tauri/Cargo.lock src-tauri/src; then
-            echo "No generated Tauri changes to commit."
-            exit 0
-          fi
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src-tauri/Cargo.lock src-tauri/src
-          git commit -m "chore(tauri): format and refresh lockfile"
-          git push origin HEAD:"${{ github.head_ref }}"
-      - name: Upload refreshed lockfile
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: tauri-cargo-lock-${{ github.sha }}
-          path: src-tauri/Cargo.lock
-          if-no-files-found: error
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
