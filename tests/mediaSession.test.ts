@@ -168,6 +168,27 @@ describe("MediaSessionController", () => {
     expect(controller.current?.scanState.status).toBe("scanning");
   });
 
+  it("retries cancellation when a superseded scan starts after the first cancel raced", () => {
+    const port = new FakeMediaScanPort();
+    const controller = new MediaSessionController(
+      port,
+      ids("session-1", "session-2"),
+    );
+
+    controller.openSource({ id: "source-1", locator: "/first" });
+    port.cancelResult = false;
+    controller.openSource({ id: "source-2", locator: "/second" });
+
+    expect(port.cancelRequests).toEqual(["session-1"]);
+
+    port.cancelResult = true;
+    port.emit(0, { event: "started", data: { sessionId: "session-1" } });
+
+    expect(port.cancelRequests).toEqual(["session-1", "session-1"]);
+    expect(controller.current?.id).toBe("session-2");
+    expect(controller.current?.scanState.status).toBe("starting");
+  });
+
   it("moves through cancelling to cancelled without dropping late batches", async () => {
     const port = new FakeMediaScanPort();
     const controller = new MediaSessionController(port, ids("session-1"));
@@ -245,5 +266,18 @@ describe("MediaSessionController", () => {
       controller.openSource({ id: "source-1", locator: "/media" }, 0),
     ).toThrow("batchSize must be a positive integer");
     expect(port.scans).toHaveLength(0);
+  });
+
+  it("validates a new session id before cancelling the active scan", () => {
+    const port = new FakeMediaScanPort();
+    const controller = new MediaSessionController(port, ids("session-1", ""));
+
+    controller.openSource({ id: "source-1", locator: "/first" });
+
+    expect(() =>
+      controller.openSource({ id: "source-2", locator: "/second" }),
+    ).toThrow("session id factory returned an empty id");
+    expect(port.cancelRequests).toEqual([]);
+    expect(controller.current?.id).toBe("session-1");
   });
 });
