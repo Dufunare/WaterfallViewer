@@ -84,6 +84,21 @@ pub async fn request_thumbnail(
     })?
 }
 
+#[tauri::command]
+pub fn release_representation(
+    resources: State<'_, MediaResourceRegistry>,
+    resource_key: String,
+) -> Result<bool, RepresentationCommandError> {
+    if resource_key.trim().is_empty() {
+        return Err(RepresentationCommandError::invalid_request(
+            "resourceKey must not be empty",
+        ));
+    }
+    resources
+        .release_derived(&resource_key)
+        .map_err(map_registry_error)
+}
+
 fn generate_thumbnail_representation(
     resources: MediaResourceRegistry,
     resource_key: String,
@@ -156,6 +171,9 @@ fn map_registry_error(error: ResourceRegistryError) -> RepresentationCommandErro
     match error {
         ResourceRegistryError::InactiveSession | ResourceRegistryError::UnknownResource => {
             RepresentationCommandError::unavailable(error.to_string())
+        }
+        ResourceRegistryError::NotDerivedResource => {
+            RepresentationCommandError::invalid_request(error.to_string())
         }
         _ => RepresentationCommandError::internal(error.to_string()),
     }
