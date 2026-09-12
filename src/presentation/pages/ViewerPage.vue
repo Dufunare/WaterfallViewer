@@ -27,6 +27,9 @@ const props = defineProps<{
   flowBrowser: MediaBrowserController;
   createCanvasBrowser: () => CanvasBrowserController;
 }>();
+const emit = defineEmits<{
+  activate: [mediaId: string];
+}>();
 
 const mode = ref<ViewerMode>(props.flowBrowser.snapshot.layoutMode);
 const workspace = shallowRef(props.workspace.snapshot);
@@ -225,12 +228,14 @@ onBeforeUnmount(() => {
         v-show="mode !== 'canvas'"
         class="viewer-pane"
         :browser="flowBrowser"
+        @activate="emit('activate', $event)"
       />
 
       <Suspense v-if="mode === 'canvas'">
         <CanvasViewport
           class="viewer-pane"
           :create-browser="createCanvasBrowser"
+          @activate="emit('activate', $event)"
         />
         <template #fallback>
           <div class="canvas-loading">Loading canvas renderer…</div>
