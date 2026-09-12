@@ -1,5 +1,7 @@
 # WaterfallViewer
 
+![CI](https://github.com/Dufunare/WaterfallViewer/actions/workflows/ci.yml/badge.svg)
+
 WaterfallViewer is a local-first, session-oriented multimedia browser for recursively exploring media stored across directory trees. The project targets a high-performance traditional waterfall/justified flow and a future free-form infinite canvas while keeping media functionality independent from visual presentation.
 
 ## Architecture
