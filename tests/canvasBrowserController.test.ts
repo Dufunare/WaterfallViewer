@@ -233,7 +233,7 @@ describe("CanvasBrowserController", () => {
     browser.zoomAtScreen(2, { x: 200, y: 150 });
     await flushMicrotasks();
 
-    expect(representationPort.calls.at(-1)).toEqual({
+    expect(representationPort.calls[representationPort.calls.length - 1]).toEqual({
       resourceKey: "1/1",
       maxEdge: 400,
     });
