@@ -11,3 +11,4 @@ serde = { version = "1", features = ["derive"] }
 walkdir = "2.5"
 tempfile = "3.13"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }

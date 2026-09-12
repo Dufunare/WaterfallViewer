@@ -14,18 +14,34 @@ use waterfall_core::{
 };
 use waterfall_infra::{
     CachingVisualMetadataReader, HeaderVisualMetadataReader, InMemoryVisualMetadataCache,
-    LocalFilesystemScanner,
+    LocalFilesystemScanner, VisualMetadataCache,
 };
 
 use crate::{local_source::LocalSourceRegistry, media_resource::MediaResourceRegistry};
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct ScanRegistry {
     sessions: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
-    visual_metadata_cache: Arc<InMemoryVisualMetadataCache>,
+    visual_metadata_cache: Arc<dyn VisualMetadataCache>,
+}
+
+impl Default for ScanRegistry {
+    fn default() -> Self {
+        Self::with_visual_metadata_cache(InMemoryVisualMetadataCache::new())
+    }
 }
 
 impl ScanRegistry {
+    pub fn with_visual_metadata_cache<C>(cache: C) -> Self
+    where
+        C: VisualMetadataCache + 'static,
+    {
+        Self {
+            sessions: Arc::new(Mutex::new(HashMap::new())),
+            visual_metadata_cache: Arc::new(cache),
+        }
+    }
+
     fn register(&self, session_id: &str) -> Result<CancellationToken, ScanCommandError> {
         if session_id.trim().is_empty() {
             return Err(ScanCommandError::invalid_request(
