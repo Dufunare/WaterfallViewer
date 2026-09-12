@@ -4258,6 +4258,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "waterfall-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "waterfall-infra"
+version = "0.1.0"
+dependencies = [
+ "walkdir",
+ "waterfall-core",
+]
+
+[[package]]
 name = "waterfallviewer"
 version = "0.1.0"
 dependencies = [
@@ -4266,6 +4281,8 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-opener",
+ "waterfall-core",
+ "waterfall-infra",
 ]
 
 [[package]]
