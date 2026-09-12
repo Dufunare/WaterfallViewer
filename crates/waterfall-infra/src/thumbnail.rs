@@ -122,8 +122,8 @@ impl ImageThumbnailer {
 }
 
 fn dimensions_of(path: &Path) -> Result<ThumbnailInfo, ThumbnailError> {
-    let (width, height) = image::image_dimensions(path)
-        .map_err(|error| ThumbnailError::Decode(error.to_string()))?;
+    let (width, height) =
+        image::image_dimensions(path).map_err(|error| ThumbnailError::Decode(error.to_string()))?;
     Ok(ThumbnailInfo { width, height })
 }
 
@@ -184,7 +184,13 @@ mod tests {
             .ensure_png(&source, &destination, ThumbnailSpec::new(100).unwrap())
             .unwrap();
 
-        assert_eq!(info, ThumbnailInfo { width: 100, height: 50 });
+        assert_eq!(
+            info,
+            ThumbnailInfo {
+                width: 100,
+                height: 50
+            }
+        );
         assert_eq!(image::image_dimensions(&destination).unwrap(), (100, 50));
     }
 
@@ -205,15 +211,25 @@ mod tests {
 
         assert_eq!(
             thumbnailer
-                .ensure_png(Path::new("missing-source.png"), &destination, ThumbnailSpec::new(32).unwrap())
+                .ensure_png(
+                    Path::new("missing-source.png"),
+                    &destination,
+                    ThumbnailSpec::new(32).unwrap()
+                )
                 .unwrap(),
-            ThumbnailInfo { width: 32, height: 16 }
+            ThumbnailInfo {
+                width: 32,
+                height: 16
+            }
         );
     }
 
     #[test]
     fn rejects_out_of_range_thumbnail_sizes() {
-        assert!(matches!(ThumbnailSpec::new(0), Err(ThumbnailError::InvalidSpec(_))));
+        assert!(matches!(
+            ThumbnailSpec::new(0),
+            Err(ThumbnailError::InvalidSpec(_))
+        ));
         assert!(matches!(
             ThumbnailSpec::new(MAX_THUMBNAIL_EDGE + 1),
             Err(ThumbnailError::InvalidSpec(_))
