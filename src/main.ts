@@ -6,6 +6,7 @@ import { CanvasBrowserController } from "./application/canvas/canvasBrowserContr
 import { CanvasSceneModel } from "./application/canvas/canvasSceneModel";
 import { MediaSessionController } from "./application/mediaSession";
 import { RepresentationScheduler } from "./application/resources/representationScheduler";
+import { MediaActivationController } from "./application/viewer/mediaActivationController";
 import { ViewerWorkspaceController } from "./application/viewer/viewerWorkspaceController";
 import { tauriMediaRepresentationPort } from "./platform/tauri/mediaRepresentation";
 import { tauriMediaResourcePort } from "./platform/tauri/mediaResource";
@@ -20,6 +21,9 @@ const representationScheduler = new RepresentationScheduler(
 );
 const workspace = markRaw(
   new ViewerWorkspaceController(sessionController, tauriSourcePickerPort),
+);
+const activation = markRaw(
+  new MediaActivationController(sessionController, tauriMediaResourcePort),
 );
 const flowBrowser = markRaw(
   new MediaBrowserController({
@@ -67,6 +71,7 @@ const createCanvasBrowser = () =>
 window.addEventListener(
   "beforeunload",
   () => {
+    activation.dispose();
     flowBrowser.dispose();
     workspace.dispose();
   },
@@ -77,4 +82,5 @@ createApp(App, {
   workspace,
   flowBrowser,
   createCanvasBrowser,
+  activation,
 }).mount("#app");
