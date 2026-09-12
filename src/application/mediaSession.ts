@@ -49,6 +49,18 @@ export class MediaIndex {
     return this.#byId.has(id);
   }
 
+  at(index: number): MediaItem | undefined {
+    if (!Number.isInteger(index) || index < 0 || index >= this.#order.length) {
+      return undefined;
+    }
+    const id = this.#order[index];
+    return this.#byId.get(id);
+  }
+
+  indexOf(id: string): number {
+    return this.#order.indexOf(id);
+  }
+
   ids(): readonly string[] {
     return [...this.#order];
   }
