@@ -12,10 +12,14 @@ import type {
   CanvasBrowserController,
   CanvasBrowserSnapshot,
 } from "../../application/canvas/canvasBrowserController";
+import { hitTestCanvasItems } from "../../application/canvas/canvasHitTest";
 import { PixiCanvasRenderer } from "../../renderers/pixi/pixiCanvasRenderer";
 
 const props = defineProps<{
   createBrowser: () => CanvasBrowserController;
+}>();
+const emit = defineEmits<{
+  activate: [mediaId: string];
 }>();
 
 const host = ref<HTMLElement | null>(null);
@@ -68,7 +72,6 @@ function onPointerDown(event: PointerEvent): void {
     return;
   }
 
-  event.preventDefault();
   activePointerId = event.pointerId;
   lastPointerX = event.clientX;
   lastPointerY = event.clientY;
@@ -115,6 +118,21 @@ function onWheel(event: WheelEvent): void {
     x: event.clientX - rect.left,
     y: event.clientY - rect.top,
   });
+}
+
+function onDoubleClick(event: MouseEvent): void {
+  const element = host.value;
+  if (element === null) {
+    return;
+  }
+  const rect = element.getBoundingClientRect();
+  const item = hitTestCanvasItems(snapshot.value.items, {
+    x: event.clientX - rect.left,
+    y: event.clientY - rect.top,
+  });
+  if (item !== null) {
+    emit("activate", item.mediaId);
+  }
 }
 
 function fitContent(): void {
@@ -195,6 +213,7 @@ onBeforeUnmount(() => {
     @pointerup="endPointer"
     @pointercancel="endPointer"
     @wheel.prevent="onWheel"
+    @dblclick="onDoubleClick"
   >
     <div class="canvas-hud">
       <span class="zoom-label">{{ zoomLabel }}</span>
