@@ -284,10 +284,8 @@ pub async fn start_scan(
 
     let scan_resources = resources.clone();
     let task = tauri::async_runtime::spawn_blocking(move || {
-        let metadata_reader = CachingVisualMetadataReader::new(
-            HeaderVisualMetadataReader::new(),
-            metadata_cache,
-        );
+        let metadata_reader =
+            CachingVisualMetadataReader::new(HeaderVisualMetadataReader::new(), metadata_cache);
         let scanner = LocalFilesystemScanner::with_metadata_reader(metadata_reader);
         let mut sink = ChannelScanSink::new(on_event, scan_resources);
         scanner.scan(&scan_request, &mut sink, &cancellation)
