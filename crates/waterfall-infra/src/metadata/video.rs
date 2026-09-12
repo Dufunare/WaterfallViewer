@@ -65,10 +65,7 @@ fn parse_iso_bmff<R: Read + Seek>(
     Ok(None)
 }
 
-fn parse_moov<R: Read + Seek>(
-    reader: &mut R,
-    moov: IsoBox,
-) -> io::Result<Option<VisualMetadata>> {
+fn parse_moov<R: Read + Seek>(reader: &mut R, moov: IsoBox) -> io::Result<Option<VisualMetadata>> {
     let mut cursor = moov.payload_start;
     let mut visited = 0usize;
 
@@ -90,10 +87,7 @@ fn parse_moov<R: Read + Seek>(
     Ok(None)
 }
 
-fn parse_trak<R: Read + Seek>(
-    reader: &mut R,
-    trak: IsoBox,
-) -> io::Result<Option<VisualMetadata>> {
+fn parse_trak<R: Read + Seek>(reader: &mut R, trak: IsoBox) -> io::Result<Option<VisualMetadata>> {
     let mut cursor = trak.payload_start;
     let mut visited = 0usize;
     let mut dimensions = None;
@@ -255,10 +249,7 @@ fn fixed_16_16_to_pixels(value: u32) -> Option<u32> {
 
 fn is_quarter_turn_matrix(a: i32, b: i32, c: i32, d: i32) -> bool {
     const ONE: i64 = 1 << 16;
-    a == 0
-        && d == 0
-        && i64::from(b).abs() == ONE
-        && i64::from(c).abs() == ONE
+    a == 0 && d == 0 && i64::from(b).abs() == ONE && i64::from(c).abs() == ONE
 }
 
 fn be_u32(data: &[u8], offset: usize) -> u32 {
@@ -363,7 +354,9 @@ fn parse_track_entry(data: &[u8], entry: EbmlElement) -> Option<VisualMetadata> 
         cursor = element.payload_end;
     }
 
-    (track_type == Some(1)).then_some(video_dimensions).flatten()
+    (track_type == Some(1))
+        .then_some(video_dimensions)
+        .flatten()
 }
 
 fn parse_video_element(data: &[u8], video: EbmlElement) -> Option<VisualMetadata> {
@@ -407,7 +400,11 @@ fn read_ebml_element(data: &[u8], cursor: usize, parent_end: usize) -> Option<Eb
     let (payload_end, complete, unknown_size) = match size {
         Some(size) => {
             let declared_end = payload_start.checked_add(size)?;
-            (declared_end.min(parent_end), declared_end <= parent_end, false)
+            (
+                declared_end.min(parent_end),
+                declared_end <= parent_end,
+                false,
+            )
         }
         None => (parent_end, false, true),
     };
@@ -436,11 +433,7 @@ fn read_ebml_id(data: &[u8], cursor: usize, parent_end: usize) -> Option<(u64, u
     Some((value, len))
 }
 
-fn read_ebml_size(
-    data: &[u8],
-    cursor: usize,
-    parent_end: usize,
-) -> Option<(Option<usize>, usize)> {
+fn read_ebml_size(data: &[u8], cursor: usize, parent_end: usize) -> Option<(Option<usize>, usize)> {
     let first = *data.get(cursor)?;
     let len = vint_len(first, 8)?;
     let end = cursor.checked_add(len)?;
