@@ -31,9 +31,14 @@ export interface ScanState {
 export class MediaIndex {
   readonly #byId = new Map<string, MediaItem>();
   readonly #order: string[] = [];
+  #replacementRevision = 0;
 
   get size(): number {
     return this.#byId.size;
+  }
+
+  get replacementRevision(): number {
+    return this.#replacementRevision;
   }
 
   get(id: string): MediaItem | undefined {
@@ -52,10 +57,25 @@ export class MediaIndex {
     return this.#order.map((id) => this.#byId.get(id)!);
   }
 
+  valuesFrom(startIndex: number): readonly MediaItem[] {
+    if (
+      !Number.isInteger(startIndex) ||
+      startIndex < 0 ||
+      startIndex > this.#order.length
+    ) {
+      throw new RangeError("startIndex must be an integer within the media index");
+    }
+    return this.#order
+      .slice(startIndex)
+      .map((id) => this.#byId.get(id)!);
+  }
+
   upsertMany(items: readonly MediaItem[]): void {
     for (const item of items) {
       if (!this.#byId.has(item.id)) {
         this.#order.push(item.id);
+      } else {
+        this.#replacementRevision += 1;
       }
       this.#byId.set(item.id, item);
     }
