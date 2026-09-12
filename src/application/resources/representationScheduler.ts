@@ -11,6 +11,11 @@ export interface ScheduledThumbnailRequest extends ThumbnailRequest {
   signal?: AbortSignal;
 }
 
+export interface ThumbnailRepresentationLease extends ThumbnailRepresentation {
+  /** Idempotently release this consumer's ownership of the representation. */
+  release(): void;
+}
+
 export interface RepresentationSchedulerOptions {
   maxConcurrent?: number;
 }
@@ -25,7 +30,7 @@ export class RepresentationRequestCancelledError extends Error {
 type JobState = "queued" | "running";
 
 interface Subscriber {
-  resolve: (representation: ThumbnailRepresentation) => void;
+  resolve: (representation: ThumbnailRepresentationLease) => void;
   reject: (error: unknown) => void;
   signal?: AbortSignal;
   abortListener?: () => void;
@@ -71,7 +76,7 @@ export class RepresentationScheduler {
 
   requestThumbnail(
     request: ScheduledThumbnailRequest,
-  ): Promise<ThumbnailRepresentation> {
+  ): Promise<ThumbnailRepresentationLease> {
     this.validateRequest(request);
     if (request.signal?.aborted) {
       return Promise.reject(new RepresentationRequestCancelledError());
@@ -104,7 +109,7 @@ export class RepresentationScheduler {
     }
 
     const activeJob = job;
-    const promise = new Promise<ThumbnailRepresentation>((resolve, reject) => {
+    const promise = new Promise<ThumbnailRepresentationLease>((resolve, reject) => {
       const subscriberId = this.nextSubscriberId++;
       const subscriber: Subscriber = {
         resolve,
@@ -175,13 +180,22 @@ export class RepresentationScheduler {
       const representation = await Promise.resolve().then(() =>
         this.port.requestThumbnail(job.request),
       );
-      this.settleSubscribers(job, (subscriber) => {
-        subscriber.resolve(representation);
-      });
+      const subscribers = this.takeSubscribers(job);
+      if (subscribers.length === 0) {
+        this.releaseBackendRegistration(representation.resourceKey);
+      } else {
+        const group = new RepresentationLeaseGroup(
+          this.port,
+          representation.resourceKey,
+        );
+        for (const subscriber of subscribers) {
+          subscriber.resolve(group.createLease(representation));
+        }
+      }
     } catch (error) {
-      this.settleSubscribers(job, (subscriber) => {
+      for (const subscriber of this.takeSubscribers(job)) {
         subscriber.reject(error);
-      });
+      }
     } finally {
       this.runningCount -= 1;
       if (this.jobs.get(job.key) === job) {
@@ -191,15 +205,20 @@ export class RepresentationScheduler {
     }
   }
 
-  private settleSubscribers(
-    job: PendingJob,
-    settle: (subscriber: Subscriber) => void,
-  ): void {
-    for (const subscriber of job.subscribers.values()) {
+  private takeSubscribers(job: PendingJob): Subscriber[] {
+    const subscribers = [...job.subscribers.values()];
+    for (const subscriber of subscribers) {
       this.removeAbortListener(subscriber);
-      settle(subscriber);
     }
     job.subscribers.clear();
+    return subscribers;
+  }
+
+  private releaseBackendRegistration(resourceKey: string): void {
+    if (this.port.releaseRepresentation === undefined) {
+      return;
+    }
+    void this.port.releaseRepresentation(resourceKey).catch(() => undefined);
   }
 
   private removeAbortListener(subscriber: Subscriber): void {
@@ -290,6 +309,70 @@ export class RepresentationScheduler {
       ];
       index = best;
     }
+  }
+}
+
+class RepresentationLeaseGroup {
+  private remaining = 0;
+  private backendReleased = false;
+
+  constructor(
+    private readonly port: MediaRepresentationPort,
+    private readonly resourceKey: string,
+  ) {}
+
+  createLease(
+    representation: ThumbnailRepresentation,
+  ): ThumbnailRepresentationLease {
+    this.remaining += 1;
+    return new ScheduledThumbnailLease(representation, () => {
+      this.releaseOne();
+    });
+  }
+
+  private releaseOne(): void {
+    if (this.remaining <= 0) {
+      return;
+    }
+    this.remaining -= 1;
+    if (this.remaining === 0) {
+      this.releaseBackend();
+    }
+  }
+
+  private releaseBackend(): void {
+    if (this.backendReleased) {
+      return;
+    }
+    this.backendReleased = true;
+    if (this.port.releaseRepresentation === undefined) {
+      return;
+    }
+    void this.port.releaseRepresentation(this.resourceKey).catch(() => undefined);
+  }
+}
+
+class ScheduledThumbnailLease implements ThumbnailRepresentationLease {
+  readonly resourceKey: string;
+  readonly width: number;
+  readonly height: number;
+  private released = false;
+
+  constructor(
+    representation: ThumbnailRepresentation,
+    private readonly onRelease: () => void,
+  ) {
+    this.resourceKey = representation.resourceKey;
+    this.width = representation.width;
+    this.height = representation.height;
+  }
+
+  release(): void {
+    if (this.released) {
+      return;
+    }
+    this.released = true;
+    this.onRelease();
   }
 }
 
