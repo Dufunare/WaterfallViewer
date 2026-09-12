@@ -342,25 +342,20 @@ function isTerminal(status: ScanStatus): boolean {
 
 function normalizeSessionError(error: unknown): SessionError {
   if (typeof error === "object" && error !== null) {
-    const maybeCode = "code" in error ? Reflect.get(error, "code") : null;
-    const maybeMessage = "message" in error ? Reflect.get(error, "message") : null;
-    if (typeof maybeMessage === "string") {
-      return {
-        code: typeof maybeCode === "string" ? maybeCode : null,
-        message: maybeMessage,
-      };
+    const candidate = error as { code?: unknown; message?: unknown };
+    const code = typeof candidate.code === "string" ? candidate.code : null;
+    if (typeof candidate.message === "string") {
+      return { code, message: candidate.message };
     }
   }
 
-  return {
-    code: null,
-    message: error instanceof Error ? error.message : String(error),
-  };
+  if (error instanceof Error) {
+    return { code: null, message: error.message };
+  }
+
+  return { code: null, message: String(error) };
 }
 
 function defaultSessionIdFactory(): string {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return crypto.randomUUID();
-  }
-  return `scan-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return globalThis.crypto.randomUUID();
 }
