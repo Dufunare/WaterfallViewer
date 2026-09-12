@@ -2,6 +2,8 @@ use std::{fs::File, io::Read};
 
 use waterfall_core::{MediaKind, MetadataReadFailure, VisualMetadata, VisualMetadataReader};
 
+use super::video::read_video_dimensions;
+
 const FAST_HEADER_BYTES: u64 = 32;
 const JPEG_HEADER_READ_LIMIT: u64 = 512 * 1024;
 
@@ -20,34 +22,54 @@ impl VisualMetadataReader for HeaderVisualMetadataReader {
         locator: &str,
         kind: &MediaKind,
     ) -> Result<Option<VisualMetadata>, MetadataReadFailure> {
-        if !matches!(kind, MediaKind::Image | MediaKind::AnimatedImage) {
-            return Ok(None);
+        match kind {
+            MediaKind::Audio => Ok(None),
+            MediaKind::Video => read_video_metadata(locator),
+            MediaKind::Image | MediaKind::AnimatedImage => read_image_metadata(locator),
         }
-
-        let mut file = File::open(locator).map_err(|error| {
-            MetadataReadFailure::new(format!("failed to open media header: {error}"))
-        })?;
-        let mut header = Vec::with_capacity(FAST_HEADER_BYTES as usize);
-        file.by_ref()
-            .take(FAST_HEADER_BYTES)
-            .read_to_end(&mut header)
-            .map_err(|error| {
-                MetadataReadFailure::new(format!("failed to read media header: {error}"))
-            })?;
-
-        if !is_jpeg(&header) {
-            return Ok(parse_dimensions(&header));
-        }
-
-        let remaining = JPEG_HEADER_READ_LIMIT.saturating_sub(header.len() as u64);
-        file.take(remaining)
-            .read_to_end(&mut header)
-            .map_err(|error| {
-                MetadataReadFailure::new(format!("failed to read JPEG header: {error}"))
-            })?;
-
-        Ok(parse_jpeg(&header))
     }
+}
+
+fn read_video_metadata(locator: &str) -> Result<Option<VisualMetadata>, MetadataReadFailure> {
+    let mut file = File::open(locator).map_err(|error| {
+        MetadataReadFailure::new(format!("failed to open video metadata: {error}"))
+    })?;
+    let file_len = file
+        .metadata()
+        .map_err(|error| {
+            MetadataReadFailure::new(format!("failed to inspect video metadata: {error}"))
+        })?
+        .len();
+
+    read_video_dimensions(&mut file, file_len).map_err(|error| {
+        MetadataReadFailure::new(format!("failed to read video metadata: {error}"))
+    })
+}
+
+fn read_image_metadata(locator: &str) -> Result<Option<VisualMetadata>, MetadataReadFailure> {
+    let mut file = File::open(locator).map_err(|error| {
+        MetadataReadFailure::new(format!("failed to open media header: {error}"))
+    })?;
+    let mut header = Vec::with_capacity(FAST_HEADER_BYTES as usize);
+    file.by_ref()
+        .take(FAST_HEADER_BYTES)
+        .read_to_end(&mut header)
+        .map_err(|error| {
+            MetadataReadFailure::new(format!("failed to read media header: {error}"))
+        })?;
+
+    if !is_jpeg(&header) {
+        return Ok(parse_dimensions(&header));
+    }
+
+    let remaining = JPEG_HEADER_READ_LIMIT.saturating_sub(header.len() as u64);
+    file.take(remaining)
+        .read_to_end(&mut header)
+        .map_err(|error| {
+            MetadataReadFailure::new(format!("failed to read JPEG header: {error}"))
+        })?;
+
+    Ok(parse_jpeg(&header))
 }
 
 fn parse_dimensions(data: &[u8]) -> Option<VisualMetadata> {
