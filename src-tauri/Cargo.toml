@@ -17,8 +17,12 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 waterfall-core = { path = "../crates/waterfall-core" }
 waterfall-infra = { path = "../crates/waterfall-infra" }
+
+[dev-dependencies]
+tempfile = "3.13"
 
 [profile.release]
 codegen-units = 1

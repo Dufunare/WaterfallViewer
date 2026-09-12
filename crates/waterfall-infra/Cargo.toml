@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 waterfall-core = { path = "../waterfall-core" }
 walkdir.workspace = true
+image.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

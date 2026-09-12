@@ -1,7 +1,7 @@
 mod ipc;
 mod media_resource;
 
-use ipc::{cancel_scan, start_scan, ScanRegistry};
+use ipc::{cancel_scan, request_thumbnail, start_scan, ScanRegistry};
 use media_resource::{respond_to_media_request, MediaResourceRegistry, MEDIA_PROTOCOL};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -22,7 +22,11 @@ pub fn run() {
             },
         )
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![start_scan, cancel_scan])
+        .invoke_handler(tauri::generate_handler![
+            start_scan,
+            cancel_scan,
+            request_thumbnail
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
