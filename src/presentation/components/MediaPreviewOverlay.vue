@@ -17,11 +17,53 @@ function close(): void {
   props.activation.clear();
 }
 
+function previous(): void {
+  props.activation.activatePrevious();
+}
+
+function next(): void {
+  props.activation.activateNext();
+}
+
 function onKeyDown(event: KeyboardEvent): void {
-  if (event.key === "Escape" && active.value !== null) {
+  if (active.value === null) {
+    return;
+  }
+
+  if (event.key === "Escape") {
     event.preventDefault();
     close();
+    return;
   }
+
+  if (
+    event.defaultPrevented ||
+    event.altKey ||
+    event.ctrlKey ||
+    event.metaKey ||
+    event.shiftKey ||
+    keepsNativeArrowBehavior(event.target)
+  ) {
+    return;
+  }
+
+  if (event.key === "ArrowLeft" && active.value.hasPrevious) {
+    event.preventDefault();
+    previous();
+  } else if (event.key === "ArrowRight" && active.value.hasNext) {
+    event.preventDefault();
+    next();
+  }
+}
+
+function keepsNativeArrowBehavior(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  return (
+    target.isContentEditable ||
+    target.closest("video, audio, input, textarea, select, [role='slider']") !== null
+  );
 }
 
 onMounted(() => {
@@ -55,13 +97,27 @@ onBeforeUnmount(() => {
               {{ active.relativePath }}
             </span>
           </div>
-          <span class="preview-kind">{{ active.kind }}</span>
+          <div class="preview-meta">
+            <span class="preview-position">{{ active.position }} / {{ active.totalItems }}</span>
+            <span class="preview-kind">{{ active.kind }}</span>
+          </div>
           <button class="preview-close" type="button" aria-label="Close preview" @click="close">
             ×
           </button>
         </header>
 
         <div class="preview-content">
+          <button
+            class="preview-nav preview-nav-previous"
+            type="button"
+            aria-label="Previous media"
+            :disabled="!active.hasPrevious"
+            @pointerdown.stop
+            @click="previous"
+          >
+            ‹
+          </button>
+
           <img
             v-if="active.kind === 'image' || active.kind === 'animated-image'"
             :key="active.mediaId"
@@ -88,6 +144,17 @@ onBeforeUnmount(() => {
               preload="metadata"
             />
           </div>
+
+          <button
+            class="preview-nav preview-nav-next"
+            type="button"
+            aria-label="Next media"
+            :disabled="!active.hasNext"
+            @pointerdown.stop
+            @click="next"
+          >
+            ›
+          </button>
         </div>
       </section>
     </div>
@@ -151,9 +218,21 @@ onBeforeUnmount(() => {
 }
 
 .preview-path,
-.preview-kind {
+.preview-kind,
+.preview-position {
   color: var(--wf-text-muted);
   font-size: 0.68rem;
+}
+
+.preview-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.preview-position {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .preview-kind {
@@ -183,12 +262,49 @@ onBeforeUnmount(() => {
 }
 
 .preview-content {
+  position: relative;
   flex: 1 1 auto;
   min-height: 0;
   display: grid;
   place-items: center;
   overflow: hidden;
   background: #050608;
+}
+
+.preview-nav {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  width: 42px;
+  height: 64px;
+  display: grid;
+  place-items: center;
+  transform: translateY(-50%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(12, 13, 17, 0.7);
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 2rem;
+  line-height: 1;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+}
+
+.preview-nav-previous {
+  left: 14px;
+}
+
+.preview-nav-next {
+  right: 14px;
+}
+
+.preview-nav:hover:not(:disabled) {
+  background: rgba(28, 30, 37, 0.88);
+}
+
+.preview-nav:disabled {
+  opacity: 0.2;
+  cursor: default;
 }
 
 .preview-image,
@@ -206,7 +322,7 @@ onBeforeUnmount(() => {
 }
 
 .preview-audio-shell {
-  width: min(620px, calc(100% - 48px));
+  width: min(620px, calc(100% - 128px));
   display: grid;
   justify-items: center;
   gap: 28px;
@@ -240,6 +356,19 @@ onBeforeUnmount(() => {
 
   .preview-kind {
     display: none;
+  }
+
+  .preview-nav {
+    width: 36px;
+    height: 54px;
+  }
+
+  .preview-nav-previous {
+    left: 8px;
+  }
+
+  .preview-nav-next {
+    right: 8px;
   }
 }
 </style>
