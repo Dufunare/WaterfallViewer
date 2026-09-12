@@ -20,6 +20,7 @@ import type {
   PickedSource,
   SourcePickerPort,
 } from "../src/application/ports/sourcePicker";
+import { MediaQueryController } from "../src/application/query/mediaQueryController";
 import { RepresentationScheduler } from "../src/application/resources/representationScheduler";
 import { ViewerWorkspaceController } from "../src/application/viewer/viewerWorkspaceController";
 
@@ -94,6 +95,7 @@ describe("unified viewer workspace", () => {
   it("lets flow and lazily-created canvas consume one shared media session without rescanning", async () => {
     const scanPort = new FakeScanPort();
     const sessionController = new MediaSessionController(scanPort, () => "session-1");
+    const query = new MediaQueryController(sessionController);
     const sourcePicker = new SingleSourcePicker();
     const representationScheduler = new RepresentationScheduler(
       new ImmediateRepresentationPort(),
@@ -194,8 +196,25 @@ describe("unified viewer workspace", () => {
     expect(scanPort.scans).toHaveLength(1);
     expect(sourcePicker.calls).toHaveLength(1);
 
+    query.setIncludedKinds(["video"]);
+    expect(query.snapshot.matchedItemCount).toBe(0);
+    expect(workspace.snapshot.itemCount).toBe(3);
+    expect(flowBrowser.snapshot.itemCount).toBe(0);
+    expect(flowBrowser.snapshot.layoutItemCount).toBe(0);
+    expect(canvasBrowser.snapshot.itemCount).toBe(0);
+    expect(canvasBrowser.snapshot.sceneNodeCount).toBe(0);
+    expect(scanPort.scans).toHaveLength(1);
+
+    query.reset();
+    expect(flowBrowser.snapshot.itemCount).toBe(3);
+    expect(flowBrowser.snapshot.layoutItemCount).toBe(3);
+    expect(canvasBrowser.snapshot.itemCount).toBe(3);
+    expect(canvasBrowser.snapshot.sceneNodeCount).toBe(3);
+    expect(scanPort.scans).toHaveLength(1);
+
     canvasBrowser.dispose();
     flowBrowser.dispose();
     workspace.dispose();
+    query.dispose();
   });
 });
