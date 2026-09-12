@@ -8,7 +8,7 @@ use std::{
 
 use tauri::http::{
     header::{ACCEPT_RANGES, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, RANGE},
-    Request, Response, StatusCode,
+    Method, Request, Response, StatusCode,
 };
 
 pub const MEDIA_PROTOCOL: &str = "waterfall-media";
@@ -176,6 +176,7 @@ pub fn respond_to_media_request(
             .headers()
             .get(RANGE)
             .and_then(|value| value.to_str().ok()),
+        request.method() == Method::HEAD,
     ) {
         Ok(response) => response,
         Err(ReadResponseError::NotFound) => empty_response(StatusCode::NOT_FOUND),
@@ -200,6 +201,7 @@ enum ReadResponseError {
 fn read_response(
     path: &Path,
     range_header: Option<&str>,
+    head_only: bool,
 ) -> Result<Response<Vec<u8>>, ReadResponseError> {
     let mut file = File::open(path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
@@ -215,10 +217,15 @@ fn read_response(
 
     match range {
         None => {
-            let length = usize::try_from(total).map_err(|_| ReadResponseError::Io)?;
-            let mut body = Vec::with_capacity(length);
-            file.read_to_end(&mut body)
-                .map_err(|_| ReadResponseError::Io)?;
+            let body = if head_only {
+                Vec::new()
+            } else {
+                let length = usize::try_from(total).map_err(|_| ReadResponseError::Io)?;
+                let mut body = Vec::with_capacity(length);
+                file.read_to_end(&mut body)
+                    .map_err(|_| ReadResponseError::Io)?;
+                body
+            };
             Response::builder()
                 .status(StatusCode::OK)
                 .header(CONTENT_TYPE, content_type)
@@ -230,12 +237,17 @@ fn read_response(
         }
         Some((start, end)) => {
             let length_u64 = end - start + 1;
-            let length = usize::try_from(length_u64).map_err(|_| ReadResponseError::Io)?;
-            file.seek(SeekFrom::Start(start))
-                .map_err(|_| ReadResponseError::Io)?;
-            let mut body = vec![0; length];
-            file.read_exact(&mut body)
-                .map_err(|_| ReadResponseError::Io)?;
+            let body = if head_only {
+                Vec::new()
+            } else {
+                let length = usize::try_from(length_u64).map_err(|_| ReadResponseError::Io)?;
+                file.seek(SeekFrom::Start(start))
+                    .map_err(|_| ReadResponseError::Io)?;
+                let mut body = vec![0; length];
+                file.read_exact(&mut body)
+                    .map_err(|_| ReadResponseError::Io)?;
+                body
+            };
             Response::builder()
                 .status(StatusCode::PARTIAL_CONTENT)
                 .header(CONTENT_TYPE, content_type)
@@ -357,6 +369,7 @@ fn content_type_for_path(path: &Path) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn registry_uses_opaque_generation_keys_and_invalidates_old_sessions() {
@@ -449,5 +462,31 @@ mod tests {
             content_type_for_path(Path::new("a.unknown")),
             "application/octet-stream"
         );
+    }
+
+    #[test]
+    fn head_responses_report_full_content_without_returning_the_body() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("clip.mp4");
+        fs::write(&path, b"0123456789").unwrap();
+
+        let response = read_response(&path, None, true).unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[CONTENT_TYPE], "video/mp4");
+        assert_eq!(response.headers()[CONTENT_LENGTH], "10");
+        assert_eq!(response.body().len(), 0);
+    }
+
+    #[test]
+    fn head_responses_preserve_range_headers_without_returning_the_body() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("clip.mp4");
+        fs::write(&path, b"0123456789").unwrap();
+
+        let response = read_response(&path, Some("bytes=2-5"), true).unwrap();
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(response.headers()[CONTENT_LENGTH], "4");
+        assert_eq!(response.headers()[CONTENT_RANGE], "bytes 2-5/10");
+        assert_eq!(response.body().len(), 0);
     }
 }
