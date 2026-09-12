@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import type { MasonryBrowserController } from "./application/browser/masonryBrowserController";
+import type { MediaBrowserController } from "./application/browser/mediaBrowserController";
 import BrowserPage from "./presentation/pages/BrowserPage.vue";
 
 defineProps<{
-  browser: MasonryBrowserController;
+  browser: MediaBrowserController;
 }>();
 </script>
 
