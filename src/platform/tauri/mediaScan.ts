@@ -9,7 +9,7 @@ import type {
 interface TauriStartScanRequest {
   sessionId: string;
   sourceId: string;
-  rootPath: string;
+  sourceLocator: string;
   batchSize: number;
 }
 
@@ -23,7 +23,7 @@ export async function scanMedia(
   const ipcRequest: TauriStartScanRequest = {
     sessionId: request.sessionId,
     sourceId: request.source.id,
-    rootPath: request.source.locator,
+    sourceLocator: request.source.locator,
     batchSize: request.batchSize,
   };
 
