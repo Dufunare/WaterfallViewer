@@ -51,10 +51,7 @@ struct PersistedVisualMetadataEntry {
 }
 
 impl PersistedVisualMetadataEntry {
-    fn from_cache_entry(
-        key: &VisualMetadataCacheKey<'_>,
-        value: Option<&VisualMetadata>,
-    ) -> Self {
+    fn from_cache_entry(key: &VisualMetadataCacheKey<'_>, value: Option<&VisualMetadata>) -> Self {
         Self {
             locator: key.locator.to_owned(),
             file_size: key.file_size,
@@ -115,12 +112,7 @@ impl SqliteVisualMetadataCache {
         let worker = thread::Builder::new()
             .name("visual-metadata-cache-writer".to_owned())
             .spawn(move || {
-                writer_loop(
-                    worker_path,
-                    max_entries,
-                    DEFAULT_WRITE_BATCH_SIZE,
-                    receiver,
-                );
+                writer_loop(worker_path, max_entries, DEFAULT_WRITE_BATCH_SIZE, receiver);
             })
             .map_err(|error| cache_error("failed to start SQLite cache writer", error))?;
 
@@ -500,8 +492,8 @@ mod tests {
         };
 
         {
-            let cache = SqliteVisualMetadataCache::with_max_entries(&path, 10)
-                .expect("open SQLite cache");
+            let cache =
+                SqliteVisualMetadataCache::with_max_entries(&path, 10).expect("open SQLite cache");
             cache
                 .store(&key("photo.jpg", &kind, 42, 100), Some(&metadata))
                 .expect("store metadata");
@@ -524,8 +516,8 @@ mod tests {
         let kind = MediaKind::Video;
 
         {
-            let cache = SqliteVisualMetadataCache::with_max_entries(&path, 10)
-                .expect("open SQLite cache");
+            let cache =
+                SqliteVisualMetadataCache::with_max_entries(&path, 10).expect("open SQLite cache");
             cache
                 .store(&key("broken.mp4", &kind, 64, 101), None)
                 .expect("store cached miss");
@@ -552,8 +544,8 @@ mod tests {
         };
 
         {
-            let cache = SqliteVisualMetadataCache::with_max_entries(&path, 10)
-                .expect("open SQLite cache");
+            let cache =
+                SqliteVisualMetadataCache::with_max_entries(&path, 10).expect("open SQLite cache");
             cache
                 .store(&key("photo.jpg", &kind, 42, 100), Some(&metadata))
                 .expect("store metadata");
@@ -580,8 +572,8 @@ mod tests {
         };
 
         {
-            let cache = SqliteVisualMetadataCache::with_max_entries(&path, 2)
-                .expect("open SQLite cache");
+            let cache =
+                SqliteVisualMetadataCache::with_max_entries(&path, 2).expect("open SQLite cache");
             for locator in ["a", "b", "c"] {
                 cache
                     .store(&key(locator, &kind, 1, 1), Some(&metadata))
