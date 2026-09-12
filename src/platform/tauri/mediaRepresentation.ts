@@ -22,6 +22,13 @@ export class TauriMediaRepresentationPort implements MediaRepresentationPort {
       maxEdge: request.maxEdge,
     });
   }
+
+  async releaseRepresentation(resourceKey: string): Promise<void> {
+    if (resourceKey.trim().length === 0) {
+      throw new RangeError("resourceKey must not be empty");
+    }
+    await invoke<boolean>("release_representation", { resourceKey });
+  }
 }
 
 export const tauriMediaRepresentationPort = new TauriMediaRepresentationPort();
