@@ -1,3 +1,8 @@
+import {
+  mediaVisualFingerprint,
+  projectMediaVisual,
+  type MediaVisualDeferredReason,
+} from "../mediaVisualProjection";
 import type { MediaItem } from "../ports/mediaScan";
 import {
   JustifiedLayoutBuilder,
@@ -11,7 +16,7 @@ import {
   type ViewportRect,
 } from "../../layout/viewport/verticalViewportIndex";
 
-export type JustifiedDeferredMediaReason = "missing-visual" | "invalid-visual";
+export type JustifiedDeferredMediaReason = MediaVisualDeferredReason;
 
 export interface JustifiedDeferredMedia {
   mediaId: string;
@@ -103,7 +108,7 @@ export class JustifiedFlowModel {
     this.#appendItems(items);
     for (const item of items) {
       this.#items.push(cloneMediaItem(item));
-      this.#fingerprints.push(layoutFingerprint(item));
+      this.#fingerprints.push(mediaVisualFingerprint(item));
       this.#mediaIds.add(item.id);
     }
   }
@@ -118,7 +123,7 @@ export class JustifiedFlowModel {
     }
     validateUniqueIds(items);
 
-    const nextFingerprints = items.map(layoutFingerprint);
+    const nextFingerprints = items.map(mediaVisualFingerprint);
     const canAppend =
       this.#sessionId === sessionId &&
       !this.#terminal &&
@@ -176,7 +181,7 @@ export class JustifiedFlowModel {
   #appendItems(items: readonly MediaItem[]): void {
     const visualItems = [];
     for (const item of items) {
-      const projection = projectVisual(item);
+      const projection = projectMediaVisual(item);
       if (projection.kind === "deferred") {
         this.#deferredMedia.push({
           mediaId: item.id,
@@ -207,7 +212,7 @@ export class JustifiedFlowModel {
     const visualItems = [];
 
     for (const item of items) {
-      const projection = projectVisual(item);
+      const projection = projectMediaVisual(item);
       if (projection.kind === "deferred") {
         nextDeferred.push({ mediaId: item.id, reason: projection.reason });
         continue;
@@ -229,7 +234,7 @@ export class JustifiedFlowModel {
     this.#viewportIndex = nextViewportIndex;
     this.#sessionId = sessionId;
     this.#items = items.map(cloneMediaItem);
-    this.#fingerprints = items.map(layoutFingerprint);
+    this.#fingerprints = items.map(mediaVisualFingerprint);
     this.#deferredMedia = nextDeferred;
     this.#terminal = terminal;
     this.#mediaIds.clear();
@@ -237,36 +242,6 @@ export class JustifiedFlowModel {
       this.#mediaIds.add(item.id);
     }
   }
-}
-
-type VisualProjection =
-  | { kind: "visual"; width: number; height: number }
-  | { kind: "deferred"; reason: JustifiedDeferredMediaReason };
-
-function projectVisual(item: MediaItem): VisualProjection {
-  if (item.visual === null) {
-    return { kind: "deferred", reason: "missing-visual" };
-  }
-  if (
-    !Number.isFinite(item.visual.width) ||
-    item.visual.width <= 0 ||
-    !Number.isFinite(item.visual.height) ||
-    item.visual.height <= 0
-  ) {
-    return { kind: "deferred", reason: "invalid-visual" };
-  }
-  return {
-    kind: "visual",
-    width: item.visual.width,
-    height: item.visual.height,
-  };
-}
-
-function layoutFingerprint(item: MediaItem): string {
-  if (item.visual === null) {
-    return `${item.id}:missing`;
-  }
-  return `${item.id}:${item.visual.width}:${item.visual.height}`;
 }
 
 function validateUniqueIds(items: readonly MediaItem[]): void {
