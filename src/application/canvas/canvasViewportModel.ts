@@ -95,8 +95,9 @@ export class CanvasViewportModel<TNode extends LayoutNode = LayoutNode> {
     this.#index.clear();
   }
 
-  queryVisible(): readonly CanvasVisibleNode<TNode>[] {
-    const worldRect = this.#camera.visibleWorldRect(this.#options.overscanPx);
+  queryVisible(overscanPx = this.#options.overscanPx): readonly CanvasVisibleNode<TNode>[] {
+    requireFiniteNonNegative(overscanPx, "overscanPx");
+    const worldRect = this.#camera.visibleWorldRect(overscanPx);
     return this.#index.query(worldRect).map((node) => {
       const screenRect = this.#camera.worldRectToScreen(node);
       return {
