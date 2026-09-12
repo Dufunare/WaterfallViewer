@@ -105,14 +105,14 @@ export class MediaSessionController {
       throw new RangeError("batchSize must be a positive integer");
     }
 
-    const previous = this.#current;
-    if (previous !== null && isActive(previous.scanState.status)) {
-      void this.#scanPort.cancel(previous.id).catch(() => undefined);
-    }
-
     const sessionId = this.#sessionIdFactory();
     if (sessionId.trim().length === 0) {
       throw new Error("session id factory returned an empty id");
+    }
+
+    const previous = this.#current;
+    if (previous !== null && isActive(previous.scanState.status)) {
+      void this.#scanPort.cancel(previous.id).catch(() => undefined);
     }
 
     this.#current = {
@@ -195,6 +195,9 @@ export class MediaSessionController {
     const current = this.#current;
     const sessionId = event.data.sessionId;
     if (current === null || current.id !== sessionId) {
+      if (event.event === "started") {
+        void this.#scanPort.cancel(sessionId).catch(() => undefined);
+      }
       return;
     }
 
