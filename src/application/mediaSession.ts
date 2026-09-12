@@ -39,7 +39,6 @@ export interface ScanState {
 export class MediaIndex {
   readonly #byId = new Map<string, MediaItem>();
   readonly #sourceOrder: string[] = [];
-  readonly #sourceOrderIndexById = new Map<string, number>();
   readonly #order: string[] = [];
   readonly #orderIndexById = new Map<string, number>();
   #includedKinds: Set<MediaKind>;
@@ -137,9 +136,7 @@ export class MediaIndex {
     for (const item of items) {
       const existing = this.#byId.get(item.id);
       if (existing === undefined) {
-        const sourceIndex = this.#sourceOrder.length;
         this.#sourceOrder.push(item.id);
-        this.#sourceOrderIndexById.set(item.id, sourceIndex);
         this.#byId.set(item.id, item);
         if (this.#includedKinds.has(item.kind)) {
           const index = this.#order.length;
