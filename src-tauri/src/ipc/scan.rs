@@ -14,6 +14,8 @@ use waterfall_core::{
 };
 use waterfall_infra::LocalFilesystemScanner;
 
+use crate::media_resource::MediaResourceRegistry;
+
 #[derive(Clone, Default)]
 pub struct ScanRegistry {
     sessions: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
@@ -119,6 +121,7 @@ pub struct MediaItemDto {
     file_size: u64,
     modified_at_ms: Option<u64>,
     visual: Option<VisualMetadataDto>,
+    resource_key: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -183,19 +186,54 @@ impl From<ScanFailure> for ScanCommandError {
     }
 }
 
-struct ChannelScanSink(Channel<ScanEventDto>);
+struct ChannelScanSink {
+    channel: Channel<ScanEventDto>,
+    resources: MediaResourceRegistry,
+}
+
+impl ChannelScanSink {
+    fn new(channel: Channel<ScanEventDto>, resources: MediaResourceRegistry) -> Self {
+        Self { channel, resources }
+    }
+
+    fn send(&self, event: ScanEventDto) -> Result<(), ScanFailure> {
+        self.channel
+            .send(event)
+            .map_err(|error| ScanFailure::sink_closed(error.to_string()))
+    }
+}
 
 impl ScanEventSink for ChannelScanSink {
     fn emit(&mut self, event: ScanEvent) -> Result<(), ScanFailure> {
-        self.0
-            .send(event.into())
-            .map_err(|error| ScanFailure::sink_closed(error.to_string()))
+        match event {
+            ScanEvent::Batch { session_id, items } => {
+                let session_id_string = session_id.as_str().to_owned();
+                let mut dto_items = Vec::with_capacity(items.len());
+                for item in items {
+                    let resource_key = self
+                        .resources
+                        .register(&session_id_string, &item.relative_path)
+                        .map_err(|error| {
+                            ScanFailure::internal(format!(
+                                "failed to register media resource: {error}"
+                            ))
+                        })?;
+                    dto_items.push(MediaItemDto::from_item(item, resource_key));
+                }
+                self.send(ScanEventDto::Batch {
+                    session_id: session_id_string,
+                    items: dto_items,
+                })
+            }
+            other => self.send(other.into()),
+        }
     }
 }
 
 #[tauri::command]
 pub async fn start_scan(
     registry: State<'_, ScanRegistry>,
+    resources: State<'_, MediaResourceRegistry>,
     request: StartScanRequestDto,
     on_event: Channel<ScanEventDto>,
 ) -> Result<(), ScanCommandError> {
@@ -206,6 +244,7 @@ pub async fn start_scan(
     }
 
     let registry = registry.inner().clone();
+    let resources = resources.inner().clone();
     let session_id = request.session_id.clone();
     let cancellation = registry.register(&session_id)?;
     let scan_request = ScanRequest::new(
@@ -214,9 +253,22 @@ pub async fn start_scan(
         request.batch_size,
     );
 
+    if let Err(error) = scan_request.validate() {
+        registry.remove(&session_id);
+        return Err(error.into());
+    }
+
+    if let Err(error) = resources.begin_session(&session_id, &scan_request.source.locator) {
+        registry.remove(&session_id);
+        return Err(ScanCommandError::internal(format!(
+            "failed to initialize media resource session: {error}"
+        )));
+    }
+
+    let scan_resources = resources.clone();
     let task = tauri::async_runtime::spawn_blocking(move || {
         let scanner = LocalFilesystemScanner::new();
-        let mut sink = ChannelScanSink(on_event);
+        let mut sink = ChannelScanSink::new(on_event, scan_resources);
         scanner.scan(&scan_request, &mut sink, &cancellation)
     });
 
@@ -242,10 +294,9 @@ impl From<ScanEvent> for ScanEventDto {
             ScanEvent::Started { session_id } => Self::Started {
                 session_id: session_id.as_str().to_owned(),
             },
-            ScanEvent::Batch { session_id, items } => Self::Batch {
-                session_id: session_id.as_str().to_owned(),
-                items: items.into_iter().map(Into::into).collect(),
-            },
+            ScanEvent::Batch { .. } => {
+                unreachable!("batch events require media resource registration")
+            }
             ScanEvent::Warning {
                 session_id,
                 warning,
@@ -271,8 +322,8 @@ impl From<ScanEvent> for ScanEventDto {
     }
 }
 
-impl From<MediaItem> for MediaItemDto {
-    fn from(item: MediaItem) -> Self {
+impl MediaItemDto {
+    fn from_item(item: MediaItem, resource_key: String) -> Self {
         Self {
             id: item.id.as_str().to_owned(),
             source_id: item.source_id.as_str().to_owned(),
@@ -282,6 +333,7 @@ impl From<MediaItem> for MediaItemDto {
             file_size: item.file_size,
             modified_at_ms: item.modified_at_ms,
             visual: item.visual.map(Into::into),
+            resource_key,
         }
     }
 }
@@ -362,6 +414,7 @@ mod tests {
                     width: 1920,
                     height: 1080,
                 }),
+                resource_key: "3/8".to_owned(),
             }],
         };
 
@@ -372,5 +425,6 @@ mod tests {
         assert_eq!(json["data"]["items"][0]["relativePath"], "nested/photo.jpg");
         assert_eq!(json["data"]["items"][0]["fileSize"], 42);
         assert_eq!(json["data"]["items"][0]["visual"]["width"], 1920);
+        assert_eq!(json["data"]["items"][0]["resourceKey"], "3/8");
     }
 }
