@@ -41,8 +41,8 @@ const DEFAULT_OPTIONS: ResolvedCanvasViewportOptions = {
  * Headless free-canvas viewport model.
  *
  * Geometry lives in world coordinates. The model owns camera transforms,
- * spatial visibility queries, overscan expansion, and coarse LOD selection;
- * renderers receive only a bounded set of projected nodes.
+ * spatial visibility queries, overscan expansion, coarse LOD selection, and
+ * point hit testing; renderers receive only projected results.
  */
 export class CanvasViewportModel<TNode extends LayoutNode = LayoutNode> {
   readonly #camera: Camera2D;
@@ -107,6 +107,32 @@ export class CanvasViewportModel<TNode extends LayoutNode = LayoutNode> {
       };
     });
   }
+
+  hitTestScreen(point: Point2D): TNode | null {
+    requireFinite(point.x, "point.x");
+    requireFinite(point.y, "point.y");
+    const world = this.#camera.screenToWorld(point);
+    const worldPixel = 1 / this.#camera.zoom;
+    const candidates = this.#index.query({
+      x: world.x - worldPixel / 2,
+      y: world.y - worldPixel / 2,
+      width: worldPixel,
+      height: worldPixel,
+    });
+
+    for (let index = candidates.length - 1; index >= 0; index -= 1) {
+      const node = candidates[index];
+      if (
+        world.x >= node.x &&
+        world.x <= node.x + node.width &&
+        world.y >= node.y &&
+        world.y <= node.y + node.height
+      ) {
+        return { ...node };
+      }
+    }
+    return null;
+  }
 }
 
 function selectLod(
@@ -143,6 +169,12 @@ function resolveOptions(
     );
   }
   return resolved;
+}
+
+function requireFinite(value: number, name: string): void {
+  if (!Number.isFinite(value)) {
+    throw new RangeError(`${name} must be finite`);
+  }
 }
 
 function requireFinitePositive(value: number, name: string): void {
