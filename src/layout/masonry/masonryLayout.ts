@@ -1,13 +1,8 @@
-export interface ViewportSize {
-  width: number;
-  height: number;
-}
-
-export interface MediaVisualInfo {
-  mediaId: string;
-  width: number;
-  height: number;
-}
+import type {
+  LayoutNode,
+  MediaVisualInfo,
+  ViewportSize,
+} from "../types";
 
 export interface MasonryLayoutConfig {
   viewport: ViewportSize;
@@ -15,17 +10,12 @@ export interface MasonryLayoutConfig {
   gap: number;
 }
 
-export interface LayoutNode {
-  mediaId: string;
+export interface MasonryLayoutNode extends LayoutNode {
   columnIndex: number;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
 }
 
 export interface MasonryLayoutResult {
-  nodes: readonly LayoutNode[];
+  nodes: readonly MasonryLayoutNode[];
   totalHeight: number;
   columnWidth: number;
 }
@@ -38,7 +28,7 @@ export class MasonryLayoutBuilder {
   readonly #config: MasonryLayoutConfig;
   readonly #columnWidth: number;
   readonly #nextY: number[];
-  readonly #nodes: LayoutNode[] = [];
+  readonly #nodes: MasonryLayoutNode[] = [];
   readonly #mediaIds = new Set<string>();
 
   constructor(config: MasonryLayoutConfig) {
@@ -68,16 +58,16 @@ export class MasonryLayoutBuilder {
    * Append a batch atomically. Invalid or duplicate entries reject the entire
    * batch without mutating existing layout state.
    */
-  append(items: readonly MediaVisualInfo[]): readonly LayoutNode[] {
+  append(items: readonly MediaVisualInfo[]): readonly MasonryLayoutNode[] {
     validateBatch(items, this.#mediaIds);
 
-    const added: LayoutNode[] = [];
+    const added: MasonryLayoutNode[] = [];
     for (const item of items) {
       const columnIndex = shortestColumnIndex(this.#nextY);
       const x = columnIndex * (this.#columnWidth + this.#config.gap);
       const y = this.#nextY[columnIndex];
       const height = (this.#columnWidth * item.height) / item.width;
-      const node: LayoutNode = {
+      const node: MasonryLayoutNode = {
         mediaId: item.mediaId,
         columnIndex,
         x,
@@ -188,6 +178,6 @@ function cloneConfig(config: MasonryLayoutConfig): MasonryLayoutConfig {
   };
 }
 
-function cloneNode(node: LayoutNode): LayoutNode {
+function cloneNode(node: MasonryLayoutNode): MasonryLayoutNode {
   return { ...node };
 }
