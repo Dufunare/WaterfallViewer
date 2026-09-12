@@ -7,6 +7,10 @@ on:
     branches:
       - main
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -67,6 +71,7 @@ jobs:
       - name: Run Tauri unit tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: tauri-cargo-lock-${{ github.sha }}
           path: src-tauri/Cargo.lock
