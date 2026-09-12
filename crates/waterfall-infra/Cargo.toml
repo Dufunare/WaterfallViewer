@@ -1,0 +1,11 @@
+[package]
+name = "waterfall-infra"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+waterfall-core = { path = "../waterfall-core" }
+walkdir.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

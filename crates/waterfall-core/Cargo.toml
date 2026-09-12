@@ -1,0 +1,7 @@
+[package]
+name = "waterfall-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde.workspace = true
