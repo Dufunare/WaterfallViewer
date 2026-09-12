@@ -16,6 +16,7 @@ import type { CanvasBrowserController } from "../../application/canvas/canvasBro
 import type {
   MediaQueryController,
   MediaQuerySnapshot,
+  MediaSort,
 } from "../../application/query/mediaQueryController";
 import type { ViewerWorkspaceController } from "../../application/viewer/viewerWorkspaceController";
 import FlowViewport from "../components/FlowViewport.vue";
@@ -26,6 +27,22 @@ const CanvasViewport = defineAsyncComponent(
 
 type ViewerMode = BrowserLayoutMode | "canvas";
 type MediaFilterPreset = "all" | "images" | "video" | "audio";
+
+const filterPresets: readonly MediaFilterPreset[] = [
+  "all",
+  "images",
+  "video",
+  "audio",
+];
+const sortOptions: ReadonlyArray<{ value: MediaSort; label: string }> = [
+  { value: "source", label: "Source order" },
+  { value: "name-asc", label: "Name A–Z" },
+  { value: "name-desc", label: "Name Z–A" },
+  { value: "modified-desc", label: "Newest" },
+  { value: "modified-asc", label: "Oldest" },
+  { value: "size-desc", label: "Largest" },
+  { value: "size-asc", label: "Smallest" },
+];
 
 const props = defineProps<{
   workspace: ViewerWorkspaceController;
@@ -153,6 +170,14 @@ function setFilter(preset: MediaFilterPreset): void {
   }
 }
 
+function handleSortChange(event: Event): void {
+  const target = event.currentTarget;
+  if (!(target instanceof HTMLSelectElement)) {
+    return;
+  }
+  props.query.setSort(target.value as MediaSort);
+}
+
 async function openSource(): Promise<void> {
   if (pickingSource.value) {
     return;
@@ -270,7 +295,7 @@ onBeforeUnmount(() => {
 
       <div class="media-filters" role="group" aria-label="Media filter">
         <button
-          v-for="preset in (['all', 'images', 'video', 'audio'] as const)"
+          v-for="preset in filterPresets"
           :key="preset"
           class="filter-button"
           :class="{ active: activeFilter === preset }"
@@ -281,6 +306,24 @@ onBeforeUnmount(() => {
           {{ preset === "all" ? "All" : preset[0].toUpperCase() + preset.slice(1) }}
         </button>
       </div>
+
+      <label class="sort-control">
+        <span class="sr-only">Sort media</span>
+        <select
+          class="sort-select"
+          :value="queryState.sort"
+          :title="queryState.sortPending ? 'Sorting will apply when scanning stops' : 'Sort media'"
+          @change="handleSortChange"
+        >
+          <option
+            v-for="option in sortOptions"
+            :key="option.value"
+            :value="option.value"
+          >
+            {{ option.label }}
+          </option>
+        </select>
+      </label>
 
       <div class="toolbar-stats" aria-live="polite">
         <span
@@ -295,6 +338,10 @@ onBeforeUnmount(() => {
           </template>
           <template v-else>{{ workspace.itemCount }} media</template>
         </span>
+        <template v-if="queryState.sortPending">
+          <span class="stat-separator">·</span>
+          <span>sort after scan</span>
+        </template>
       </div>
 
       <div class="toolbar-actions">
@@ -369,9 +416,9 @@ onBeforeUnmount(() => {
   height: var(--wf-toolbar-height);
   flex: 0 0 var(--wf-toolbar-height);
   display: grid;
-  grid-template-columns: minmax(150px, 1fr) auto auto auto minmax(190px, 1fr);
+  grid-template-columns: minmax(150px, 1fr) auto auto auto auto minmax(190px, 1fr);
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   padding: 0 14px;
   border-bottom: 1px solid var(--wf-border);
   background: var(--wf-surface);
@@ -381,6 +428,7 @@ onBeforeUnmount(() => {
 .brand-block,
 .viewer-modes,
 .media-filters,
+.sort-control,
 .toolbar-stats,
 .toolbar-actions {
   min-width: 0;
@@ -432,6 +480,18 @@ onBeforeUnmount(() => {
 .filter-button.active {
   background: var(--wf-surface-raised);
   color: var(--wf-text);
+}
+
+.sort-select {
+  min-height: 31px;
+  max-width: 132px;
+  padding: 3px 24px 3px 8px;
+  border: 1px solid var(--wf-border);
+  border-radius: 8px;
+  background: var(--wf-surface-raised);
+  color: var(--wf-text-muted);
+  font: inherit;
+  font-size: 0.72rem;
 }
 
 .toolbar-stats {
@@ -565,9 +625,21 @@ onBeforeUnmount(() => {
   font-size: 0.82rem;
 }
 
-@media (max-width: 1060px) {
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 1180px) {
   .viewer-toolbar {
-    grid-template-columns: minmax(120px, 1fr) auto auto minmax(160px, 1fr);
+    grid-template-columns: minmax(120px, 1fr) auto auto auto minmax(160px, 1fr);
   }
 
   .toolbar-stats {
@@ -575,23 +647,25 @@ onBeforeUnmount(() => {
   }
 }
 
-@media (max-width: 760px) {
+@media (max-width: 860px) {
   .media-filters {
     display: none;
   }
 
   .viewer-toolbar {
-    grid-template-columns: minmax(120px, 1fr) auto minmax(150px, 1fr);
+    grid-template-columns: minmax(120px, 1fr) auto auto minmax(150px, 1fr);
   }
 }
 
-@media (max-width: 620px) {
+@media (max-width: 680px) {
+  .sort-control,
   .source-name,
   .toolbar-button.secondary {
     display: none;
   }
 
   .viewer-toolbar {
+    grid-template-columns: minmax(120px, 1fr) auto minmax(145px, 1fr);
     gap: 8px;
     padding: 0 8px;
   }

@@ -15,6 +15,25 @@ export const ALL_MEDIA_KINDS: readonly MediaKind[] = [
   "audio",
 ];
 
+export type MediaSort =
+  | "source"
+  | "name-asc"
+  | "name-desc"
+  | "modified-desc"
+  | "modified-asc"
+  | "size-desc"
+  | "size-asc";
+
+export const ALL_MEDIA_SORTS: readonly MediaSort[] = [
+  "source",
+  "name-asc",
+  "name-desc",
+  "modified-desc",
+  "modified-asc",
+  "size-desc",
+  "size-asc",
+];
+
 export type ScanStatus =
   | "starting"
   | "scanning"
@@ -39,14 +58,21 @@ export interface ScanState {
 export class MediaIndex {
   readonly #byId = new Map<string, MediaItem>();
   readonly #sourceOrder: string[] = [];
+  readonly #sourceOrderIndexById = new Map<string, number>();
   readonly #order: string[] = [];
   readonly #orderIndexById = new Map<string, number>();
   #includedKinds: Set<MediaKind>;
+  #sort: MediaSort;
   #replacementRevision = 0;
   #projectionRevision = 0;
 
-  constructor(includedKinds: readonly MediaKind[] = ALL_MEDIA_KINDS) {
+  constructor(
+    includedKinds: readonly MediaKind[] = ALL_MEDIA_KINDS,
+    sort: MediaSort = "source",
+  ) {
     this.#includedKinds = normalizeKinds(includedKinds);
+    validateSort(sort);
+    this.#sort = sort;
   }
 
   /** Number of items in the current query projection. */
@@ -73,6 +99,10 @@ export class MediaIndex {
 
   get includedKinds(): readonly MediaKind[] {
     return ALL_MEDIA_KINDS.filter((kind) => this.#includedKinds.has(kind));
+  }
+
+  get sort(): MediaSort {
+    return this.#sort;
   }
 
   get(id: string): MediaItem | undefined {
@@ -131,17 +161,35 @@ export class MediaIndex {
     return true;
   }
 
+  setSort(sort: MediaSort): boolean {
+    validateSort(sort);
+    if (sort === this.#sort) {
+      return false;
+    }
+    this.#sort = sort;
+    this.#rebuildProjection();
+    this.#projectionRevision += 1;
+    this.#replacementRevision += 1;
+    return true;
+  }
+
   upsertMany(items: readonly MediaItem[]): void {
     let requiresProjectionRebuild = false;
     for (const item of items) {
       const existing = this.#byId.get(item.id);
       if (existing === undefined) {
+        const sourceIndex = this.#sourceOrder.length;
         this.#sourceOrder.push(item.id);
+        this.#sourceOrderIndexById.set(item.id, sourceIndex);
         this.#byId.set(item.id, item);
         if (this.#includedKinds.has(item.kind)) {
-          const index = this.#order.length;
-          this.#order.push(item.id);
-          this.#orderIndexById.set(item.id, index);
+          if (this.#sort === "source") {
+            const index = this.#order.length;
+            this.#order.push(item.id);
+            this.#orderIndexById.set(item.id, index);
+          } else {
+            requiresProjectionRebuild = true;
+          }
         }
         continue;
       }
@@ -150,7 +198,7 @@ export class MediaIndex {
       const isIncluded = this.#includedKinds.has(item.kind);
       this.#byId.set(item.id, item);
       this.#replacementRevision += 1;
-      if (wasIncluded !== isIncluded) {
+      if (wasIncluded !== isIncluded || (isIncluded && this.#sort !== "source")) {
         requiresProjectionRebuild = true;
       }
     }
@@ -169,10 +217,53 @@ export class MediaIndex {
       if (item === undefined || !this.#includedKinds.has(item.kind)) {
         continue;
       }
-      const index = this.#order.length;
       this.#order.push(id);
-      this.#orderIndexById.set(id, index);
     }
+
+    if (this.#sort !== "source") {
+      this.#order.sort((leftId, rightId) => this.#compareIds(leftId, rightId));
+    }
+
+    for (let index = 0; index < this.#order.length; index += 1) {
+      this.#orderIndexById.set(this.#order[index], index);
+    }
+  }
+
+  #compareIds(leftId: string, rightId: string): number {
+    const left = this.#byId.get(leftId)!;
+    const right = this.#byId.get(rightId)!;
+    let result = 0;
+
+    switch (this.#sort) {
+      case "source":
+        break;
+      case "name-asc":
+        result = MEDIA_NAME_COLLATOR.compare(left.name, right.name);
+        break;
+      case "name-desc":
+        result = MEDIA_NAME_COLLATOR.compare(right.name, left.name);
+        break;
+      case "modified-desc":
+        result = compareOptionalNumber(left.modifiedAtMs, right.modifiedAtMs, -1);
+        break;
+      case "modified-asc":
+        result = compareOptionalNumber(left.modifiedAtMs, right.modifiedAtMs, 1);
+        break;
+      case "size-desc":
+        result = compareNumber(left.fileSize, right.fileSize, -1);
+        break;
+      case "size-asc":
+        result = compareNumber(left.fileSize, right.fileSize, 1);
+        break;
+    }
+
+    if (result !== 0) {
+      return result;
+    }
+    return (
+      (this.#sourceOrderIndexById.get(leftId) ?? 0) -
+      (this.#sourceOrderIndexById.get(rightId) ?? 0)
+    );
   }
 }
 
@@ -194,6 +285,7 @@ export class MediaSessionController {
 
   #current: MediaSession | null = null;
   #includedKinds: readonly MediaKind[] = ALL_MEDIA_KINDS;
+  #sort: MediaSort = "source";
 
   constructor(
     scanPort: MediaScanPort,
@@ -209,6 +301,10 @@ export class MediaSessionController {
 
   get includedKinds(): readonly MediaKind[] {
     return [...this.#includedKinds];
+  }
+
+  get sort(): MediaSort {
+    return this.#sort;
   }
 
   subscribe(listener: MediaSessionListener): () => void {
@@ -235,6 +331,32 @@ export class MediaSessionController {
 
   resetIncludedKinds(): boolean {
     return this.setIncludedKinds(ALL_MEDIA_KINDS);
+  }
+
+  setSort(sort: MediaSort): boolean {
+    validateSort(sort);
+    if (sort === this.#sort) {
+      return false;
+    }
+
+    this.#sort = sort;
+    const current = this.#current;
+    if (current === null) {
+      return true;
+    }
+
+    if (isTerminal(current.scanState.status)) {
+      if (current.items.setSort(sort)) {
+        this.#replaceCurrent({ ...current });
+      }
+    } else {
+      this.#publish();
+    }
+    return true;
+  }
+
+  resetSort(): boolean {
+    return this.setSort("source");
   }
 
   openSource(source: SourceDescriptor, batchSize = 64): string {
@@ -380,6 +502,7 @@ export class MediaSessionController {
       }
 
       case "finished":
+        current.items.setSort(this.#sort);
         this.#replaceCurrent({
           ...current,
           scanState: {
@@ -392,6 +515,7 @@ export class MediaSessionController {
         break;
 
       case "cancelled":
+        current.items.setSort(this.#sort);
         this.#replaceCurrent({
           ...current,
           scanState: {
@@ -415,6 +539,7 @@ export class MediaSessionController {
       return;
     }
 
+    current.items.setSort(this.#sort);
     this.#replaceCurrent({
       ...current,
       scanState: {
@@ -436,6 +561,11 @@ export class MediaSessionController {
     }
   }
 }
+
+const MEDIA_NAME_COLLATOR = new Intl.Collator(undefined, {
+  numeric: true,
+  sensitivity: "base",
+});
 
 function normalizeKinds(kinds: readonly MediaKind[]): Set<MediaKind> {
   const next = new Set<MediaKind>();
@@ -467,6 +597,33 @@ function sameKindSet(left: ReadonlySet<MediaKind>, right: ReadonlySet<MediaKind>
 
 function sameKindArray(left: readonly MediaKind[], right: readonly MediaKind[]): boolean {
   return left.length === right.length && left.every((kind, index) => kind === right[index]);
+}
+
+function validateSort(sort: MediaSort): void {
+  if (!ALL_MEDIA_SORTS.includes(sort)) {
+    throw new RangeError(`unsupported media sort: ${String(sort)}`);
+  }
+}
+
+function compareNumber(left: number, right: number, direction: 1 | -1): number {
+  if (left === right) {
+    return 0;
+  }
+  return (left < right ? -1 : 1) * direction;
+}
+
+function compareOptionalNumber(
+  left: number | null,
+  right: number | null,
+  direction: 1 | -1,
+): number {
+  if (left === null) {
+    return right === null ? 0 : 1;
+  }
+  if (right === null) {
+    return -1;
+  }
+  return compareNumber(left, right, direction);
 }
 
 function isActive(status: ScanStatus): boolean {
