@@ -83,6 +83,11 @@ export class PixiCanvasRenderer {
       textureGCActive: true,
     });
 
+    if (this.#disposed) {
+      app.destroy({ removeView: true }, { children: true, context: true });
+      return;
+    }
+
     const canvas = app.canvas as HTMLCanvasElement;
     canvas.style.display = "block";
     canvas.style.width = "100%";
