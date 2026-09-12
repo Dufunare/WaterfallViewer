@@ -1,4 +1,4 @@
-import { createApp } from "vue";
+import { createApp, markRaw } from "vue";
 
 import App from "./App.vue";
 import { MasonryBrowserController } from "./application/browser/masonryBrowserController";
@@ -15,12 +15,14 @@ const representationScheduler = new RepresentationScheduler(
   tauriMediaRepresentationPort,
   { maxConcurrent: 6 },
 );
-const browser = new MasonryBrowserController({
-  sessionController,
-  sourcePicker: tauriSourcePickerPort,
-  representationScheduler,
-  resourcePort: tauriMediaResourcePort,
-});
+const browser = markRaw(
+  new MasonryBrowserController({
+    sessionController,
+    sourcePicker: tauriSourcePickerPort,
+    representationScheduler,
+    resourcePort: tauriMediaResourcePort,
+  }),
+);
 
 window.addEventListener(
   "beforeunload",
