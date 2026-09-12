@@ -146,7 +146,7 @@ fn write_atomically(destination: &Path, bytes: Vec<u8>) -> Result<(), ThumbnailE
 
     match fs::rename(&temp, destination) {
         Ok(()) => Ok(()),
-        Err(error) if destination.exists() => {
+        Err(_error) if destination.exists() => {
             let _ = fs::remove_file(&temp);
             Ok(())
         }
