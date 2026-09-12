@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{hash_map::Entry, HashMap},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -31,13 +31,15 @@ impl ScanRegistry {
             .sessions
             .lock()
             .map_err(|_| ScanCommandError::internal("scan registry lock poisoned"))?;
-        if sessions.contains_key(session_id) {
-            return Err(ScanCommandError::session_exists(session_id));
-        }
 
-        let flag = Arc::new(AtomicBool::new(false));
-        sessions.insert(session_id.to_owned(), flag.clone());
-        Ok(CancellationToken(flag))
+        match sessions.entry(session_id.to_owned()) {
+            Entry::Occupied(_) => Err(ScanCommandError::session_exists(session_id)),
+            Entry::Vacant(entry) => {
+                let flag = Arc::new(AtomicBool::new(false));
+                entry.insert(flag.clone());
+                Ok(CancellationToken(flag))
+            }
+        }
     }
 
     fn cancel(&self, session_id: &str) -> Result<bool, ScanCommandError> {
