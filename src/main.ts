@@ -1,7 +1,7 @@
 import { createApp, markRaw } from "vue";
 
 import App from "./App.vue";
-import { MasonryBrowserController } from "./application/browser/masonryBrowserController";
+import { MediaBrowserController } from "./application/browser/mediaBrowserController";
 import { MediaSessionController } from "./application/mediaSession";
 import { RepresentationScheduler } from "./application/resources/representationScheduler";
 import { tauriMediaRepresentationPort } from "./platform/tauri/mediaRepresentation";
@@ -16,7 +16,7 @@ const representationScheduler = new RepresentationScheduler(
   { maxConcurrent: 6 },
 );
 const browser = markRaw(
-  new MasonryBrowserController({
+  new MediaBrowserController({
     sessionController,
     sourcePicker: tauriSourcePickerPort,
     representationScheduler,
