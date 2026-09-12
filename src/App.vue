@@ -1,12 +1,20 @@
 <script setup lang="ts">
 import type { MediaBrowserController } from "./application/browser/mediaBrowserController";
-import BrowserPage from "./presentation/pages/BrowserPage.vue";
+import type { CanvasBrowserController } from "./application/canvas/canvasBrowserController";
+import type { ViewerWorkspaceController } from "./application/viewer/viewerWorkspaceController";
+import ViewerPage from "./presentation/pages/ViewerPage.vue";
 
 defineProps<{
-  browser: MediaBrowserController;
+  workspace: ViewerWorkspaceController;
+  flowBrowser: MediaBrowserController;
+  createCanvasBrowser: () => CanvasBrowserController;
 }>();
 </script>
 
 <template>
-  <BrowserPage :browser="browser" />
+  <ViewerPage
+    :workspace="workspace"
+    :flow-browser="flowBrowser"
+    :create-canvas-browser="createCanvasBrowser"
+  />
 </template>
