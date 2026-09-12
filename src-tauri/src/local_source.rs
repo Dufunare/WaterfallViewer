@@ -106,11 +106,15 @@ mod tests {
         let registry = LocalSourceRegistry::default();
 
         let source = registry.register(dir.path()).unwrap();
+        let raw_path = dir.path().to_string_lossy();
 
         assert!(source.source_id.starts_with("local-"));
         assert!(source.locator.starts_with("local-source/"));
-        assert!(!source.locator.contains(&dir.path().to_string_lossy().to_string()));
-        assert_eq!(registry.resolve(&source.locator).unwrap(), fs::canonicalize(dir.path()).unwrap());
+        assert!(!source.locator.contains(raw_path.as_ref()));
+        assert_eq!(
+            registry.resolve(&source.locator).unwrap(),
+            fs::canonicalize(dir.path()).unwrap()
+        );
     }
 
     #[test]
