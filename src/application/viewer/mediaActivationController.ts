@@ -1,6 +1,6 @@
 import { MediaSessionController } from "../mediaSession";
 import type { MediaResourcePort } from "../ports/mediaResource";
-import type { MediaKind } from "../ports/mediaScan";
+import type { MediaItem, MediaKind } from "../ports/mediaScan";
 
 export interface ActiveMediaSnapshot {
   sessionId: string;
@@ -9,6 +9,10 @@ export interface ActiveMediaSnapshot {
   relativePath: string;
   kind: MediaKind;
   uri: string;
+  position: number;
+  totalItems: number;
+  hasPrevious: boolean;
+  hasNext: boolean;
 }
 
 export type MediaActivationListener = (
@@ -21,6 +25,8 @@ export type MediaActivationListener = (
  * Browsing stays lightweight: activating one item resolves its original media
  * URI only on demand. Session replacement automatically invalidates stale
  * activation so an overlay can never keep a resource handle from an old source.
+ * Adjacent navigation follows the stable scan order and still resolves only the
+ * single item that becomes active.
  */
 export class MediaActivationController {
   readonly #sessionController: MediaSessionController;
@@ -29,6 +35,7 @@ export class MediaActivationController {
   readonly #unsubscribeSession: () => void;
 
   #snapshot: ActiveMediaSnapshot | null = null;
+  #activeIndex: number | null = null;
   #disposed = false;
 
   constructor(
@@ -62,26 +69,39 @@ export class MediaActivationController {
     }
 
     const session = this.#sessionController.current;
-    const media = session?.items.get(mediaId);
-    if (session === null || media === undefined) {
+    if (session === null) {
       return false;
     }
 
-    const next: ActiveMediaSnapshot = {
-      sessionId: session.id,
-      mediaId: media.id,
-      name: media.name,
-      relativePath: media.relativePath,
-      kind: media.kind,
-      uri: this.#resourcePort.uriFor(media.resourceKey),
-    };
-    if (sameSnapshot(this.#snapshot, next)) {
-      return true;
+    const index = session.items.indexOf(mediaId);
+    if (index < 0) {
+      return false;
     }
+    return this.#activateIndex(index);
+  }
 
-    this.#snapshot = next;
-    this.#publish();
-    return true;
+  activatePrevious(): boolean {
+    this.#assertActive();
+    if (this.#activeIndex === null || this.#snapshot === null) {
+      return false;
+    }
+    const session = this.#sessionController.current;
+    if (session === null || session.id !== this.#snapshot.sessionId) {
+      return false;
+    }
+    return this.#activateIndex(this.#activeIndex - 1);
+  }
+
+  activateNext(): boolean {
+    this.#assertActive();
+    if (this.#activeIndex === null || this.#snapshot === null) {
+      return false;
+    }
+    const session = this.#sessionController.current;
+    if (session === null || session.id !== this.#snapshot.sessionId) {
+      return false;
+    }
+    return this.#activateIndex(this.#activeIndex + 1);
   }
 
   clear(): void {
@@ -90,6 +110,7 @@ export class MediaActivationController {
       return;
     }
     this.#snapshot = null;
+    this.#activeIndex = null;
     this.#publish();
   }
 
@@ -101,6 +122,45 @@ export class MediaActivationController {
     this.#unsubscribeSession();
     this.#listeners.clear();
     this.#snapshot = null;
+    this.#activeIndex = null;
+  }
+
+  #activateIndex(index: number): boolean {
+    const session = this.#sessionController.current;
+    const media = session?.items.at(index);
+    if (session === null || media === undefined) {
+      return false;
+    }
+
+    const next = this.#buildSnapshot(session.id, index, session.items.size, media);
+    this.#activeIndex = index;
+    if (sameSnapshot(this.#snapshot, next)) {
+      return true;
+    }
+
+    this.#snapshot = next;
+    this.#publish();
+    return true;
+  }
+
+  #buildSnapshot(
+    sessionId: string,
+    index: number,
+    totalItems: number,
+    media: MediaItem,
+  ): ActiveMediaSnapshot {
+    return {
+      sessionId,
+      mediaId: media.id,
+      name: media.name,
+      relativePath: media.relativePath,
+      kind: media.kind,
+      uri: this.#resourcePort.uriFor(media.resourceKey),
+      position: index + 1,
+      totalItems,
+      hasPrevious: index > 0,
+      hasNext: index + 1 < totalItems,
+    };
   }
 
   #reconcile(): void {
@@ -110,30 +170,33 @@ export class MediaActivationController {
 
     const session = this.#sessionController.current;
     if (session === null || session.id !== this.#snapshot.sessionId) {
-      this.#snapshot = null;
-      this.#publish();
+      this.#clearFromSessionChange();
       return;
     }
 
-    const media = session.items.get(this.#snapshot.mediaId);
-    if (media === undefined) {
-      this.#snapshot = null;
-      this.#publish();
+    let index = this.#activeIndex;
+    let media = index === null ? undefined : session.items.at(index);
+    if (media?.id !== this.#snapshot.mediaId) {
+      index = session.items.indexOf(this.#snapshot.mediaId);
+      media = index < 0 ? undefined : session.items.at(index);
+    }
+    if (index === null || index < 0 || media === undefined) {
+      this.#clearFromSessionChange();
       return;
     }
 
-    const next: ActiveMediaSnapshot = {
-      sessionId: session.id,
-      mediaId: media.id,
-      name: media.name,
-      relativePath: media.relativePath,
-      kind: media.kind,
-      uri: this.#resourcePort.uriFor(media.resourceKey),
-    };
+    const next = this.#buildSnapshot(session.id, index, session.items.size, media);
+    this.#activeIndex = index;
     if (!sameSnapshot(this.#snapshot, next)) {
       this.#snapshot = next;
       this.#publish();
     }
+  }
+
+  #clearFromSessionChange(): void {
+    this.#snapshot = null;
+    this.#activeIndex = null;
+    this.#publish();
   }
 
   #publish(): void {
@@ -166,6 +229,10 @@ function sameSnapshot(
     left.name === right.name &&
     left.relativePath === right.relativePath &&
     left.kind === right.kind &&
-    left.uri === right.uri
+    left.uri === right.uri &&
+    left.position === right.position &&
+    left.totalItems === right.totalItems &&
+    left.hasPrevious === right.hasPrevious &&
+    left.hasNext === right.hasNext
   );
 }
