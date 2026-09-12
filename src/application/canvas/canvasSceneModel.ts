@@ -151,8 +151,8 @@ export class CanvasSceneModel {
     }
   }
 
-  queryVisible(): readonly CanvasSceneItem[] {
-    return this.#viewport.queryVisible().flatMap((visible) => {
+  queryVisible(overscanPx?: number): readonly CanvasSceneItem[] {
+    return this.#viewport.queryVisible(overscanPx).flatMap((visible) => {
       const media = this.#itemsById.get(visible.node.mediaId);
       if (media === undefined) {
         return [];
