@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fs,
     sync::{Arc, RwLock},
     time::UNIX_EPOCH,
@@ -10,6 +10,7 @@ use waterfall_core::{
 };
 
 pub const VISUAL_METADATA_PARSER_VERSION: u32 = 1;
+pub const DEFAULT_VISUAL_METADATA_CACHE_ENTRIES: usize = 100_000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum VisualMetadataCacheLookup {
@@ -90,8 +91,21 @@ struct CachedVisualMetadataEntry {
 }
 
 #[derive(Debug, Default)]
+struct InMemoryCacheState {
+    entries: HashMap<String, CachedVisualMetadataEntry>,
+    insertion_order: VecDeque<String>,
+}
+
+#[derive(Debug)]
 pub struct InMemoryVisualMetadataCache {
-    entries: RwLock<HashMap<String, CachedVisualMetadataEntry>>,
+    state: RwLock<InMemoryCacheState>,
+    max_entries: usize,
+}
+
+impl Default for InMemoryVisualMetadataCache {
+    fn default() -> Self {
+        Self::with_max_entries(DEFAULT_VISUAL_METADATA_CACHE_ENTRIES)
+    }
 }
 
 impl InMemoryVisualMetadataCache {
@@ -99,15 +113,27 @@ impl InMemoryVisualMetadataCache {
         Self::default()
     }
 
+    pub fn with_max_entries(max_entries: usize) -> Self {
+        assert!(max_entries > 0, "max_entries must be positive");
+        Self {
+            state: RwLock::new(InMemoryCacheState::default()),
+            max_entries,
+        }
+    }
+
     pub fn len(&self) -> Result<usize, VisualMetadataCacheError> {
-        self.entries
+        self.state
             .read()
-            .map(|entries| entries.len())
+            .map(|state| state.entries.len())
             .map_err(|_| VisualMetadataCacheError::new("visual metadata cache lock poisoned"))
     }
 
     pub fn is_empty(&self) -> Result<bool, VisualMetadataCacheError> {
         self.len().map(|length| length == 0)
+    }
+
+    pub fn max_entries(&self) -> usize {
+        self.max_entries
     }
 }
 
@@ -116,11 +142,11 @@ impl VisualMetadataCache for InMemoryVisualMetadataCache {
         &self,
         key: &VisualMetadataCacheKey<'_>,
     ) -> Result<VisualMetadataCacheLookup, VisualMetadataCacheError> {
-        let entries = self
-            .entries
+        let state = self
+            .state
             .read()
             .map_err(|_| VisualMetadataCacheError::new("visual metadata cache lock poisoned"))?;
-        let Some(entry) = entries.get(key.locator) else {
+        let Some(entry) = state.entries.get(key.locator) else {
             return Ok(VisualMetadataCacheLookup::Miss);
         };
 
@@ -140,11 +166,22 @@ impl VisualMetadataCache for InMemoryVisualMetadataCache {
         key: &VisualMetadataCacheKey<'_>,
         value: Option<&VisualMetadata>,
     ) -> Result<(), VisualMetadataCacheError> {
-        let mut entries = self
-            .entries
+        let mut state = self
+            .state
             .write()
             .map_err(|_| VisualMetadataCacheError::new("visual metadata cache lock poisoned"))?;
-        entries.insert(
+
+        if !state.entries.contains_key(key.locator) {
+            while state.entries.len() >= self.max_entries {
+                let Some(oldest_locator) = state.insertion_order.pop_front() else {
+                    break;
+                };
+                state.entries.remove(&oldest_locator);
+            }
+            state.insertion_order.push_back(key.locator.to_owned());
+        }
+
+        state.entries.insert(
             key.locator.to_owned(),
             CachedVisualMetadataEntry {
                 file_size: key.file_size,
@@ -281,6 +318,26 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct FailingCache;
+
+    impl VisualMetadataCache for FailingCache {
+        fn lookup(
+            &self,
+            _key: &VisualMetadataCacheKey<'_>,
+        ) -> Result<VisualMetadataCacheLookup, VisualMetadataCacheError> {
+            Err(VisualMetadataCacheError::new("lookup failed"))
+        }
+
+        fn store(
+            &self,
+            _key: &VisualMetadataCacheKey<'_>,
+            _value: Option<&VisualMetadata>,
+        ) -> Result<(), VisualMetadataCacheError> {
+            Err(VisualMetadataCacheError::new("store failed"))
+        }
+    }
+
     #[test]
     fn reuses_cached_metadata_while_file_fingerprint_is_stable() {
         let directory = tempdir().expect("temp directory");
@@ -393,5 +450,86 @@ mod tests {
             .read_visual_metadata(&locator, &MediaKind::Video)
             .expect("version invalidation");
         assert_eq!(second.inner.calls(), 1);
+    }
+
+    #[test]
+    fn evicts_oldest_locator_when_the_entry_budget_is_full() {
+        let cache = InMemoryVisualMetadataCache::with_max_entries(2);
+        let kind = MediaKind::Image;
+        let metadata = VisualMetadata {
+            width: 1,
+            height: 1,
+        };
+
+        for locator in ["a", "b", "c"] {
+            cache
+                .store(
+                    &VisualMetadataCacheKey {
+                        locator,
+                        file_size: 1,
+                        modified_at_ms: 1,
+                        kind: &kind,
+                        parser_version: 1,
+                    },
+                    Some(&metadata),
+                )
+                .expect("store cache entry");
+        }
+
+        assert_eq!(cache.len().expect("cache length"), 2);
+        assert_eq!(
+            cache
+                .lookup(&VisualMetadataCacheKey {
+                    locator: "a",
+                    file_size: 1,
+                    modified_at_ms: 1,
+                    kind: &kind,
+                    parser_version: 1,
+                })
+                .expect("lookup evicted entry"),
+            VisualMetadataCacheLookup::Miss
+        );
+        for locator in ["b", "c"] {
+            assert!(matches!(
+                cache
+                    .lookup(&VisualMetadataCacheKey {
+                        locator,
+                        file_size: 1,
+                        modified_at_ms: 1,
+                        kind: &kind,
+                        parser_version: 1,
+                    })
+                    .expect("lookup retained entry"),
+                VisualMetadataCacheLookup::Hit(Some(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn cache_adapter_failure_degrades_to_the_underlying_reader() {
+        let directory = tempdir().expect("temp directory");
+        let path = directory.path().join("image.png");
+        fs::write(&path, b"stable").expect("write media");
+        let locator = path.to_string_lossy();
+        let reader = CachingVisualMetadataReader::new(
+            CountingReader::new(Some(VisualMetadata {
+                width: 320,
+                height: 240,
+            })),
+            FailingCache,
+        );
+
+        for _ in 0..2 {
+            assert_eq!(
+                reader
+                    .read_visual_metadata(&locator, &MediaKind::Image)
+                    .expect("reader survives cache failure"),
+                Some(VisualMetadata {
+                    width: 320,
+                    height: 240,
+                })
+            );
+        }
+        assert_eq!(reader.inner.calls(), 2);
     }
 }
