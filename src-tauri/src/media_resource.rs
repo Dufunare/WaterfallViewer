@@ -130,7 +130,13 @@ pub fn respond_to_media_request(
         return empty_response(StatusCode::NOT_FOUND);
     };
 
-    match read_response(&path, request.headers().get(RANGE).and_then(|value| value.to_str().ok())) {
+    match read_response(
+        &path,
+        request
+            .headers()
+            .get(RANGE)
+            .and_then(|value| value.to_str().ok()),
+    ) {
         Ok(response) => response,
         Err(ReadResponseError::NotFound) => empty_response(StatusCode::NOT_FOUND),
         Err(ReadResponseError::InvalidRange(total)) => Response::builder()
@@ -151,7 +157,10 @@ enum ReadResponseError {
     Io,
 }
 
-fn read_response(path: &Path, range_header: Option<&str>) -> Result<Response<Vec<u8>>, ReadResponseError> {
+fn read_response(
+    path: &Path,
+    range_header: Option<&str>,
+) -> Result<Response<Vec<u8>>, ReadResponseError> {
     let mut file = File::open(path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             ReadResponseError::NotFound
@@ -160,14 +169,16 @@ fn read_response(path: &Path, range_header: Option<&str>) -> Result<Response<Vec
         }
     })?;
     let total = file.metadata().map_err(|_| ReadResponseError::Io)?.len();
-    let range = parse_range(range_header, total).map_err(|_| ReadResponseError::InvalidRange(total))?;
+    let range =
+        parse_range(range_header, total).map_err(|_| ReadResponseError::InvalidRange(total))?;
     let content_type = content_type_for_path(path);
 
     match range {
         None => {
             let length = usize::try_from(total).map_err(|_| ReadResponseError::Io)?;
             let mut body = Vec::with_capacity(length);
-            file.read_to_end(&mut body).map_err(|_| ReadResponseError::Io)?;
+            file.read_to_end(&mut body)
+                .map_err(|_| ReadResponseError::Io)?;
             Response::builder()
                 .status(StatusCode::OK)
                 .header(CONTENT_TYPE, content_type)
@@ -183,7 +194,8 @@ fn read_response(path: &Path, range_header: Option<&str>) -> Result<Response<Vec
             file.seek(SeekFrom::Start(start))
                 .map_err(|_| ReadResponseError::Io)?;
             let mut body = vec![0; length];
-            file.read_exact(&mut body).map_err(|_| ReadResponseError::Io)?;
+            file.read_exact(&mut body)
+                .map_err(|_| ReadResponseError::Io)?;
             Response::builder()
                 .status(StatusCode::PARTIAL_CONTENT)
                 .header(CONTENT_TYPE, content_type)
@@ -312,7 +324,10 @@ mod tests {
         registry.begin_session("s1", "/media/one").unwrap();
         let first = registry.register("s1", "nested/a.jpg").unwrap();
         assert_eq!(first, "1/0");
-        assert_eq!(registry.resolve(&first), Some(PathBuf::from("/media/one/nested/a.jpg")));
+        assert_eq!(
+            registry.resolve(&first),
+            Some(PathBuf::from("/media/one/nested/a.jpg"))
+        );
 
         registry.begin_session("s2", "/media/two").unwrap();
         assert_eq!(registry.resolve(&first), None);
