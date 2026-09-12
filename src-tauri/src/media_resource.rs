@@ -30,6 +30,7 @@ struct SessionResources {
     root: PathBuf,
     next_key: u64,
     paths: HashMap<u64, PathBuf>,
+    derived_keys: HashMap<PathBuf, u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,6 +38,7 @@ pub enum ResourceRegistryError {
     EmptySessionId,
     InvalidRelativePath,
     InactiveSession,
+    UnknownResource,
     ExhaustedKeys,
     Poisoned,
 }
@@ -47,6 +49,7 @@ impl std::fmt::Display for ResourceRegistryError {
             Self::EmptySessionId => "media resource session id must not be empty",
             Self::InvalidRelativePath => "media resource path must be a safe relative path",
             Self::InactiveSession => "media resource session is no longer active",
+            Self::UnknownResource => "media resource key is not registered in the active session",
             Self::ExhaustedKeys => "media resource key space exhausted",
             Self::Poisoned => "media resource registry lock poisoned",
         };
@@ -81,6 +84,7 @@ impl MediaResourceRegistry {
             root: root.into(),
             next_key: 0,
             paths: HashMap::new(),
+            derived_keys: HashMap::new(),
         });
         Ok(())
     }
@@ -101,12 +105,39 @@ impl MediaResourceRegistry {
             .filter(|session| session.session_id == session_id)
             .ok_or(ResourceRegistryError::InactiveSession)?;
 
-        let key = session.next_key;
-        session.next_key = session
-            .next_key
-            .checked_add(1)
-            .ok_or(ResourceRegistryError::ExhaustedKeys)?;
+        let key = take_next_key(session)?;
         session.paths.insert(key, session.root.join(relative));
+        Ok(format!("{}/{}", session.generation, key))
+    }
+
+    pub fn register_derived(
+        &self,
+        source_resource_key: &str,
+        path: impl Into<PathBuf>,
+    ) -> Result<String, ResourceRegistryError> {
+        let (generation, source_key) =
+            parse_resource_key(source_resource_key).ok_or(ResourceRegistryError::UnknownResource)?;
+        let path = path.into();
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| ResourceRegistryError::Poisoned)?;
+        let session = state
+            .current
+            .as_mut()
+            .filter(|session| session.generation == generation)
+            .ok_or(ResourceRegistryError::InactiveSession)?;
+
+        if !session.paths.contains_key(&source_key) {
+            return Err(ResourceRegistryError::UnknownResource);
+        }
+        if let Some(existing) = session.derived_keys.get(&path) {
+            return Ok(format!("{}/{}", session.generation, existing));
+        }
+
+        let key = take_next_key(session)?;
+        session.paths.insert(key, path.clone());
+        session.derived_keys.insert(path, key);
         Ok(format!("{}/{}", session.generation, key))
     }
 
@@ -119,6 +150,15 @@ impl MediaResourceRegistry {
         }
         session.paths.get(&key).cloned()
     }
+}
+
+fn take_next_key(session: &mut SessionResources) -> Result<u64, ResourceRegistryError> {
+    let key = session.next_key;
+    session.next_key = session
+        .next_key
+        .checked_add(1)
+        .ok_or(ResourceRegistryError::ExhaustedKeys)?;
+    Ok(key)
 }
 
 pub fn respond_to_media_request(
@@ -337,6 +377,31 @@ mod tests {
         );
         let second = registry.register("s2", "b.jpg").unwrap();
         assert_eq!(second, "2/0");
+    }
+
+    #[test]
+    fn derived_resources_are_deduplicated_and_bound_to_the_active_generation() {
+        let registry = MediaResourceRegistry::default();
+        registry.begin_session("s1", "/media").unwrap();
+        let source = registry.register("s1", "a.jpg").unwrap();
+
+        let first = registry
+            .register_derived(&source, "/cache/thumbs/a.png")
+            .unwrap();
+        let second = registry
+            .register_derived(&source, "/cache/thumbs/a.png")
+            .unwrap();
+        assert_eq!(first, second);
+        assert_eq!(
+            registry.resolve(&first),
+            Some(PathBuf::from("/cache/thumbs/a.png"))
+        );
+
+        registry.begin_session("s2", "/other").unwrap();
+        assert_eq!(
+            registry.register_derived(&source, "/cache/thumbs/a.png"),
+            Err(ResourceRegistryError::InactiveSession)
+        );
     }
 
     #[test]
