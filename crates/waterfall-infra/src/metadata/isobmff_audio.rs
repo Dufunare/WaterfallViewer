@@ -19,8 +19,9 @@ pub(super) fn read_iso_bmff_audio_detail_file(
             MetadataReadFailure::new(format!("failed to inspect audio detail: {error}"))
         })?
         .len();
-    read_iso_bmff_audio_detail(&mut file, file_len)
-        .map_err(|error| MetadataReadFailure::new(format!("failed to read ISO-BMFF audio detail: {error}")))
+    read_iso_bmff_audio_detail(&mut file, file_len).map_err(|error| {
+        MetadataReadFailure::new(format!("failed to read ISO-BMFF audio detail: {error}"))
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -49,10 +50,7 @@ fn read_iso_bmff_audio_detail<R: Read + Seek>(
     Ok(None)
 }
 
-fn read_moov_audio_detail<R: Read + Seek>(
-    reader: &mut R,
-    moov: IsoBox,
-) -> io::Result<AudioDetail> {
+fn read_moov_audio_detail<R: Read + Seek>(reader: &mut R, moov: IsoBox) -> io::Result<AudioDetail> {
     let mut cursor = moov.payload_start;
     let mut visited = 0usize;
     let mut duration_ms = None;
