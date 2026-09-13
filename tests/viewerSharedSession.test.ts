@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { MediaBrowserController } from "../src/application/browser/mediaBrowserController";
-import { CanvasBrowserController } from "../src/application/canvas/canvasBrowserController";
-import { CanvasSceneModel } from "../src/application/canvas/canvasSceneModel";
-import { MediaSessionController } from "../src/application/mediaSession";
+import type {
+  MediaDetail,
+  MediaDetailPort,
+  MediaDetailRequest,
+} from "../src/application/ports/mediaDetail";
 import type {
   MediaRepresentationPort,
   ThumbnailRepresentation,
@@ -20,8 +21,7 @@ import type {
   PickedSource,
   SourcePickerPort,
 } from "../src/application/ports/sourcePicker";
-import { RepresentationScheduler } from "../src/application/resources/representationScheduler";
-import { ViewerWorkspaceController } from "../src/application/viewer/viewerWorkspaceController";
+import { createViewerRuntime } from "../src/bootstrap/viewerRuntime";
 
 class FakeScanPort implements MediaScanPort {
   readonly requests: MediaScanRequest[] = [];
@@ -75,6 +75,12 @@ class FakeResourcePort implements MediaResourcePort {
   }
 }
 
+class NullDetailPort implements MediaDetailPort {
+  async getDetail(_request: MediaDetailRequest): Promise<MediaDetail | null> {
+    return null;
+  }
+}
+
 function media(index: number): MediaItem {
   return {
     id: `media-${index}`,
@@ -89,24 +95,6 @@ function media(index: number): MediaItem {
   };
 }
 
-function createScene(): CanvasSceneModel {
-  return new CanvasSceneModel({
-    atlas: {
-      worldWidth: 1000,
-      itemHeight: 100,
-      gap: 10,
-      minItemWidth: 25,
-    },
-    viewport: {
-      overscanPx: 0,
-      cellSize: 100,
-      thumbnailMinEdgePx: 48,
-      detailMinEdgePx: 500,
-      camera: { viewport: { width: 1, height: 1 } },
-    },
-  });
-}
-
 async function flushMicrotasks(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
@@ -115,37 +103,25 @@ async function flushMicrotasks(): Promise<void> {
 }
 
 describe("shared viewer workspace integration", () => {
-  it("feeds flow and canvas from one source pick and one scan session", async () => {
+  it("feeds flow and canvas from one runtime, source pick and scan session", async () => {
     const scanPort = new FakeScanPort();
     const picker = new SingleSourcePicker();
-    const sessionController = new MediaSessionController(
-      scanPort,
-      () => "session-1",
-    );
-    const scheduler = new RepresentationScheduler(
-      new ImmediateRepresentationPort(),
-      { maxConcurrent: 8 },
-    );
-    const resourcePort = new FakeResourcePort();
-    const workspace = new ViewerWorkspaceController(sessionController, picker);
-    const flow = new MediaBrowserController({
-      sessionController,
-      sourcePicker: picker,
-      representationScheduler: scheduler,
-      resourcePort,
-    });
-    const scene = createScene();
-    const createCanvas = () =>
-      new CanvasBrowserController({
-        sessionController,
+    const runtime = createViewerRuntime(
+      {
+        scan: scanPort,
         sourcePicker: picker,
-        representationScheduler: scheduler,
-        resourcePort,
-        scene,
-      });
-    const canvas = createCanvas();
+        representation: new ImmediateRepresentationPort(),
+        resource: new FakeResourcePort(),
+        detail: new NullDetailPort(),
+      },
+      {
+        sessionIdFactory: () => "session-1",
+        representationMaxConcurrent: 8,
+      },
+    );
+    const canvas = runtime.createCanvasBrowser();
 
-    flow.setViewport({
+    runtime.flowBrowser.setViewport({
       width: 500,
       height: 400,
       scrollTop: 0,
@@ -153,7 +129,7 @@ describe("shared viewer workspace integration", () => {
     });
     canvas.setViewport({ width: 500, height: 400, devicePixelRatio: 1 });
 
-    await workspace.pickAndOpenSource();
+    await runtime.workspace.pickAndOpenSource();
     expect(picker.calls).toBe(1);
     expect(scanPort.requests).toHaveLength(1);
 
@@ -178,26 +154,28 @@ describe("shared viewer workspace integration", () => {
     });
     await flushMicrotasks();
 
-    expect(workspace.snapshot).toMatchObject({
+    expect(runtime.workspace.snapshot).toMatchObject({
       sourceDisplayName: "Shared Gallery",
       sessionId: "session-1",
       itemCount: 3,
     });
-    expect(flow.snapshot.sessionId).toBe("session-1");
-    expect(flow.snapshot.itemCount).toBe(3);
+    expect(runtime.sessionController.current?.id).toBe("session-1");
+    expect(runtime.query.snapshot.itemCount).toBe(3);
+    expect(runtime.flowBrowser.snapshot.sessionId).toBe("session-1");
+    expect(runtime.flowBrowser.snapshot.itemCount).toBe(3);
     expect(canvas.snapshot.sessionId).toBe("session-1");
     expect(canvas.snapshot.itemCount).toBe(3);
     expect(scanPort.requests).toHaveLength(1);
 
-    flow.setLayoutMode("justified");
-    expect(flow.snapshot.layoutMode).toBe("justified");
+    runtime.flowBrowser.setLayoutMode("justified");
+    expect(runtime.flowBrowser.snapshot.layoutMode).toBe("justified");
     expect(scanPort.requests).toHaveLength(1);
 
     canvas.panByScreen({ x: -60, y: 20 });
     const cameraBeforeDispose = canvas.snapshot.camera;
     canvas.dispose();
 
-    const remountedCanvas = createCanvas();
+    const remountedCanvas = runtime.createCanvasBrowser();
     remountedCanvas.setViewport({
       width: 500,
       height: 400,
@@ -214,7 +192,7 @@ describe("shared viewer workspace integration", () => {
     expect(picker.calls).toBe(1);
 
     remountedCanvas.dispose();
-    flow.dispose();
-    workspace.dispose();
+    runtime.dispose();
+    runtime.dispose();
   });
 });
