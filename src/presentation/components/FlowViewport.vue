@@ -198,7 +198,7 @@ onBeforeUnmount(() => {
   display: grid;
   place-items: center;
   background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.025), transparent 60%),
+    linear-gradient(135deg, var(--wf-placeholder-sheen), transparent 60%),
     var(--wf-surface-raised);
 }
 
@@ -216,7 +216,7 @@ onBeforeUnmount(() => {
   width: 26px;
   height: 3px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.16);
+  background: var(--wf-loading-indicator);
   animation: pulse 1.1s ease-in-out infinite alternate;
 }
 
