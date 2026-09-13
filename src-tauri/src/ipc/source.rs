@@ -43,6 +43,12 @@ pub async fn pick_source_directory(
     app: AppHandle,
     sources: State<'_, LocalSourceRegistry>,
 ) -> Result<Option<PickedSourceDto>, SourceCommandError> {
+    #[cfg(feature = "native-e2e")]
+    if let Some(path) = std::env::var_os("WATERFALL_NATIVE_E2E_SOURCE") {
+        let source = sources.register(path)?;
+        return Ok(Some(source.into()));
+    }
+
     let selected = app.dialog().file().blocking_pick_folder();
     let Some(selected) = selected else {
         return Ok(None);
@@ -53,9 +59,15 @@ pub async fn pick_source_directory(
         .map_err(|error| SourceCommandError::new("invalid-source", error.to_string()))?;
     let source = sources.register(path)?;
 
-    Ok(Some(PickedSourceDto {
-        source_id: source.source_id,
-        locator: source.locator,
-        display_name: source.display_name,
-    }))
+    Ok(Some(source.into()))
+}
+
+impl From<crate::local_source::RegisteredLocalSource> for PickedSourceDto {
+    fn from(source: crate::local_source::RegisteredLocalSource) -> Self {
+        Self {
+            source_id: source.source_id,
+            locator: source.locator,
+            display_name: source.display_name,
+        }
+    }
 }
