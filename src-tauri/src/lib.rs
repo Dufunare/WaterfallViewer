@@ -5,8 +5,8 @@ mod thumbnail_cache;
 mod thumbnail_request;
 
 use ipc::{
-    cancel_scan, cancel_thumbnail_request, pick_source_directory, release_representation,
-    request_thumbnail, start_scan, ScanRegistry,
+    cancel_scan, cancel_thumbnail_request, get_media_detail, pick_source_directory,
+    release_representation, request_thumbnail, start_scan, ScanRegistry,
 };
 use local_source::LocalSourceRegistry;
 use media_resource::{respond_to_media_request, MediaResourceRegistry, MEDIA_PROTOCOL};
@@ -66,6 +66,7 @@ pub fn run() {
             request_thumbnail,
             cancel_thumbnail_request,
             release_representation,
+            get_media_detail,
             pick_source_directory
         ])
         .run(tauri::generate_context!())
