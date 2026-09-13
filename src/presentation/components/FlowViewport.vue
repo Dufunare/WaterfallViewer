@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   computed,
+  inject,
   onBeforeUnmount,
   onMounted,
   ref,
@@ -11,6 +12,7 @@ import type {
   BrowserTile,
   MediaBrowserController,
 } from "../../application/browser/mediaBrowserController";
+import { mediaSelectionKey } from "../selectionContext";
 
 const props = defineProps<{
   browser: MediaBrowserController;
@@ -19,16 +21,24 @@ const emit = defineEmits<{
   activate: [mediaId: string];
 }>();
 
+const selection = inject(mediaSelectionKey);
+if (selection === undefined) {
+  throw new Error("FlowViewport requires the shared media selection context");
+}
+
 const viewportElement = ref<HTMLElement | null>(null);
 const snapshot = shallowRef(props.browser.snapshot);
+const selectionSnapshot = shallowRef(selection.snapshot);
 
 let unsubscribe: (() => void) | null = null;
+let unsubscribeSelection: (() => void) | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let viewportFrame: number | null = null;
 
 const canvasStyle = computed(() => ({
   height: `${Math.max(1, snapshot.value.totalHeight)}px`,
 }));
+const selectedIds = computed(() => new Set(selectionSnapshot.value.selectedIds));
 
 function tileStyle(tile: BrowserTile): Record<string, string> {
   return {
@@ -36,6 +46,14 @@ function tileStyle(tile: BrowserTile): Record<string, string> {
     height: `${tile.height}px`,
     transform: `translate3d(${tile.x}px, ${tile.y}px, 0)`,
   };
+}
+
+function selectTile(tile: BrowserTile, event: MouseEvent): void {
+  if (event.ctrlKey || event.metaKey) {
+    selection.toggle(tile.mediaId);
+  } else {
+    selection.replace(tile.mediaId);
+  }
 }
 
 function scheduleViewportSync(): void {
@@ -66,6 +84,9 @@ onMounted(() => {
   unsubscribe = props.browser.subscribe((nextSnapshot) => {
     snapshot.value = nextSnapshot;
   });
+  unsubscribeSelection = selection.subscribe((nextSnapshot) => {
+    selectionSnapshot.value = nextSnapshot;
+  });
 
   const element = viewportElement.value;
   if (element !== null) {
@@ -77,6 +98,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   unsubscribe?.();
+  unsubscribeSelection?.();
   resizeObserver?.disconnect();
   if (viewportFrame !== null) {
     window.cancelAnimationFrame(viewportFrame);
@@ -96,9 +118,13 @@ onBeforeUnmount(() => {
         v-for="tile in snapshot.tiles"
         :key="tile.mediaId"
         class="flow-tile"
-        :class="{ overscan: tile.priority === 'overscan' }"
+        :class="{
+          overscan: tile.priority === 'overscan',
+          selected: selectedIds.has(tile.mediaId),
+        }"
         :style="tileStyle(tile)"
-        :title="`${tile.relativePath} — double-click to open`"
+        :title="`${tile.relativePath} — click to select, double-click to open`"
+        @click="selectTile(tile, $event)"
         @dblclick="emit('activate', tile.mediaId)"
       >
         <img
@@ -151,6 +177,11 @@ onBeforeUnmount(() => {
   contain: layout paint style;
   content-visibility: auto;
   cursor: default;
+}
+
+.flow-tile.selected {
+  z-index: 1;
+  box-shadow: inset 0 0 0 2px var(--wf-accent);
 }
 
 .flow-tile.overscan {
