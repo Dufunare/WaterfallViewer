@@ -1,8 +1,13 @@
-use std::{env, path::PathBuf, process, time::{Duration, Instant}};
+use std::{
+    env,
+    path::PathBuf,
+    process,
+    time::{Duration, Instant},
+};
 
 use waterfall_core::{
-    CancellationProbe, MediaScanner, MediaSource, ScanEvent, ScanEventSink, ScanFailure, ScanRequest,
-    ScanSummary, SourceId,
+    CancellationProbe, MediaScanner, MediaSource, ScanEvent, ScanEventSink, ScanFailure,
+    ScanRequest, ScanSummary, SourceId,
 };
 use waterfall_infra::LocalFilesystemScanner;
 
@@ -62,7 +67,10 @@ fn main() {
     };
 
     if !config.root.is_dir() {
-        eprintln!("benchmark root is not a readable directory: {}", config.root.display());
+        eprintln!(
+            "benchmark root is not a readable directory: {}",
+            config.root.display()
+        );
         process::exit(2);
     }
 
@@ -128,7 +136,10 @@ fn main() {
     println!("  min:    {:>9.3} ms", min.as_secs_f64() * 1_000.0);
     println!("  median: {:>9.3} ms", median.as_secs_f64() * 1_000.0);
     println!("  max:    {:>9.3} ms", max.as_secs_f64() * 1_000.0);
-    println!("  median throughput: {:.1} accepted/s", throughput(accepted, median));
+    println!(
+        "  median throughput: {:.1} accepted/s",
+        throughput(accepted, median)
+    );
 }
 
 fn run_once(
@@ -251,12 +262,8 @@ mod tests {
 
     #[test]
     fn rejects_zero_measured_runs() {
-        let error = parse_args([
-            "media".to_string(),
-            "--runs".to_string(),
-            "0".to_string(),
-        ])
-        .expect_err("zero runs should fail");
+        let error = parse_args(["media".to_string(), "--runs".to_string(), "0".to_string()])
+            .expect_err("zero runs should fail");
         assert!(error.contains("greater than zero"));
     }
 
@@ -271,10 +278,7 @@ mod tests {
             Duration::from_millis(3)
         );
         assert_eq!(
-            median_duration(&[
-                Duration::from_millis(2),
-                Duration::from_millis(6),
-            ]),
+            median_duration(&[Duration::from_millis(2), Duration::from_millis(6),]),
             Duration::from_millis(4)
         );
     }
