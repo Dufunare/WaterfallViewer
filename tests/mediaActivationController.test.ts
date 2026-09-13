@@ -77,6 +77,7 @@ describe("MediaActivationController", () => {
       name: "clip.mp4",
       relativePath: "nested/clip.mp4",
       kind: "video",
+      resourceKey: "1/clip",
       uri: "test-media://1/clip",
       position: 1,
       totalItems: 1,
