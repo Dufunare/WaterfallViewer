@@ -53,7 +53,7 @@ jobs:
                 rust_core=true
                 tauri_rust=true
                 ;;
-              src/*|tests/*|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|.npmrc|index.html|vite.config.*|tsconfig*.json)
+              src/*|tests/*|benchmarks/*|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|.npmrc|index.html|vite.config.*|tsconfig*.json)
                 frontend=true
                 ;;
               crates/*)
