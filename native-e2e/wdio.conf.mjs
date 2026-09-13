@@ -3,7 +3,8 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const root = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
+const nativeE2ERoot = path.dirname(fileURLToPath(import.meta.url));
+const root = path.resolve(nativeE2ERoot, "..");
 const application = path.join(root, "src-tauri", "target", "release", "waterfallviewer");
 
 let tauriDriver;
@@ -12,7 +13,7 @@ let shuttingDown = false;
 export const config = {
   host: "127.0.0.1",
   port: 4444,
-  specs: ["./specs/**/*.spec.mjs"],
+  specs: [path.join(nativeE2ERoot, "specs", "**", "*.spec.mjs")],
   maxInstances: 1,
   capabilities: [
     {
