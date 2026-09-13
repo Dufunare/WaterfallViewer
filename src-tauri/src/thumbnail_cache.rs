@@ -12,6 +12,11 @@ const THUMBNAIL_CACHE_TARGET_BYTES: u64 = 1_700 * 1024 * 1024;
 const THUMBNAIL_CACHE_MIN_AGE: Duration = Duration::from_secs(5 * 60);
 const GENERATED_FILES_BETWEEN_MAINTENANCE: u64 = 64;
 
+/// Cumulative backend cache-registration telemetry plus current active leases.
+///
+/// Generated/reused counts describe successful backend representation
+/// registrations, not frontend subscriber counts: scheduler deduplication may
+/// satisfy multiple consumers from one backend request.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ThumbnailCacheTelemetrySnapshot {
     pub generated_registrations: u64,
@@ -55,6 +60,11 @@ struct ActiveCachePath {
 }
 
 impl ThumbnailCacheManager {
+    /// Register one backend representation registration as an active cache
+    /// consumer. Maintenance runs on the first registration and periodically
+    /// after newly generated files. It never removes paths still registered as
+    /// active and relies on a short age grace period to protect concurrently
+    /// published files that have not reached registration yet.
     pub fn register_and_maintain(
         &self,
         resource_key: &str,
@@ -174,6 +184,7 @@ impl ThumbnailCacheManager {
         Ok(())
     }
 
+    /// Read telemetry without touching the filesystem or changing cache state.
     pub fn telemetry_snapshot(&self) -> Result<ThumbnailCacheTelemetrySnapshot, String> {
         let state = self
             .inner

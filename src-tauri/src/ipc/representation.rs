@@ -228,6 +228,8 @@ fn generate_thumbnail_representation(
     if let Err(error) =
         cache.register_and_maintain(&thumbnail_key, &cache_path, &cache_root, newly_generated)
     {
+        // Cache maintenance is deliberately best-effort. The cached file is an
+        // optimization, so maintenance failure must not make browsing fail.
         eprintln!("thumbnail cache maintenance failed: {error}");
     }
 
