@@ -1,7 +1,34 @@
 use serde::Serialize;
 use tauri::State;
 
-use crate::thumbnail_request::{ThumbnailRequestRegistry, ThumbnailRequestTelemetrySnapshot};
+use crate::{
+    media_resource::{MediaResourceRegistry, MediaResourceTelemetrySnapshot},
+    thumbnail_request::{ThumbnailRequestRegistry, ThumbnailRequestTelemetrySnapshot},
+};
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaResourceTelemetryDto {
+    active_session: bool,
+    generation: u64,
+    source_resource_keys: u64,
+    derived_resource_keys: u64,
+    derived_registrations: u64,
+    total_resource_keys: u64,
+}
+
+impl From<MediaResourceTelemetrySnapshot> for MediaResourceTelemetryDto {
+    fn from(snapshot: MediaResourceTelemetrySnapshot) -> Self {
+        Self {
+            active_session: snapshot.active_session,
+            generation: snapshot.generation,
+            source_resource_keys: snapshot.source_resource_keys,
+            derived_resource_keys: snapshot.derived_resource_keys,
+            derived_registrations: snapshot.derived_registrations,
+            total_resource_keys: snapshot.total_resource_keys,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -19,6 +46,16 @@ impl From<ThumbnailRequestTelemetrySnapshot> for ThumbnailRequestTelemetryDto {
             pending_cancellations: snapshot.pending_cancellations,
         }
     }
+}
+
+#[tauri::command]
+pub fn get_media_resource_telemetry(
+    resources: State<'_, MediaResourceRegistry>,
+) -> Result<MediaResourceTelemetryDto, String> {
+    resources
+        .telemetry_snapshot()
+        .map(MediaResourceTelemetryDto::from)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
