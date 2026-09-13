@@ -3,7 +3,7 @@
 > Status: Living implementation baseline
 > Architecture reference: [`ARCHITECTURE.md`](ARCHITECTURE.md) v0.3
 > Baseline date: 2026-09-13
-> Baseline commit: `1fb3226` (`feat(metadata): add ISO-BMFF audio detail fast path`)
+> Baseline commit: `196ee90` (`feat(metadata): add Ogg Vorbis and Opus detail fast paths`)
 
 This document records what the repository actually implements today. `ARCHITECTURE.md` remains the design rationale and long-term direction; when proven implementation choices differ from the original sketch, this document is the source of truth for current behavior until the architecture document is revised.
 
@@ -44,7 +44,7 @@ Media activation
   -> previous / next navigation
   -> active video/audio detail request through opaque resource key
   -> stale-safe preview metadata state
-  -> ISO-BMFF video/audio / WAV / ID3v2 / FLAC lightweight detail fast paths
+  -> ISO-BMFF video/audio / WAV / ID3v2 / FLAC / Ogg Vorbis / Opus detail fast paths
   -> duration/codec plus supported audio title/artist display
 
 Platform input
@@ -76,7 +76,7 @@ The project is therefore best described as a **working desktop media-browsing co
 | B. Streaming Image Browser | Complete | Tauri Channel streaming, session replacement/cancellation, incremental Masonry/Justified layout, viewport virtualization and DOM browsing are implemented. |
 | C. Resource Pipeline | Core complete | Thumbnail generation, opaque resource protocol, priority/deduplicating scheduler, persistent visual metadata cache, explicit representation leases, bounded thumbnail disk eviction and cooperative running-generation cancellation exist. Future representation kinds can reuse this lifecycle rather than requiring a new resource architecture. |
 | D. Free Canvas | Core complete | World-space scene, camera, spatial index, LOD policy, bounded viewport snapshots and PixiJS renderer are implemented and share the same media session/query/selection as Flow. |
-| E. Multimedia | Partial, materially advanced | Animated image, video and audio remain visible in browsing; explicit preview/playback exists; video dimensions have a container fast path. Video/audio details are loaded on demand outside the scan hot path. Current lightweight detail coverage includes ISO-BMFF video metadata, M4A/MP4-audio duration and audio sample-entry codec, WAV, ID3v2/MP3 identification and FLAC STREAMINFO/Vorbis Comment metadata. Poster/cover representations and broader container/tag coverage remain. |
+| E. Multimedia | Partial, materially advanced | Animated image, video and audio remain visible in browsing; explicit preview/playback exists; video dimensions have a container fast path. Video/audio details are loaded on demand outside the scan hot path. Current lightweight detail coverage includes ISO-BMFF video metadata, M4A/MP4-audio duration and audio sample-entry codec, WAV, ID3v2/MP3, FLAC STREAMINFO/Vorbis Comment, Ogg Vorbis and Opus metadata. Poster/cover representations and broader container/tag coverage remain. |
 | F. Theme & Runtime Customization | Foundation established | Semantic palette/state/overlay/effect tokens now back the main Flow, Canvas and Preview visual surfaces. Runtime theme packs, user theme selection and optional effect modules are not yet implemented. |
 | G. Mobile Adapter | In progress | Desktop semantic input exists and Free Canvas accepts touch tap, one-finger pan and two-finger pan/pinch through the same semantic actions. Mobile source/resource adapters, mobile resource budgets and broader mobile interaction/UI adaptation remain. |
 
@@ -115,6 +115,8 @@ As of `22121d8`, richer video/audio details are requested only for an explicitly
 As of `0d50666`, the lightweight fast paths include ISO-BMFF video duration/sample-entry codec, WAV duration/format, ID3v2 title/artist plus MP3 identification, and FLAC STREAMINFO duration/codec plus bounded Vorbis Comment title/artist parsing. FLAC metadata blocks are bounded/skipped rather than decoded, and this work remains on-demand rather than part of recursive scanning.
 
 As of `1fb3226`, ISO-BMFF audio files such as M4A also use lightweight box parsing for movie duration and the `soun` track sample-entry codec (for example `mp4a` or `alac`). Video tracks are explicitly ignored when resolving an audio codec. iTunes-style title/artist atoms and embedded artwork remain deferred rather than turning this path into a full MP4 metadata library.
+
+As of `196ee90`, Ogg Vorbis and Opus details are also parsed without decoding audio frames. Header/tag packet traversal is bounded; Vorbis duration uses the final granule position and identification-header sample rate, while Opus duration applies the RFC pre-skip rule at 48 kHz. The final granule is located from a bounded tail window instead of linearly scanning the full media payload. Vorbis Comments / OpusTags provide supported title and artist values.
 
 As of `ba9cb6e`, `PreviewMediaDetailController` observes activation as a sidecar rather than turning navigation into asynchronous state. It rejects stale results after rapid previous/next navigation and degrades metadata failures without affecting media playback. Image and animated-image activation does not trigger this detail I/O.
 
@@ -195,6 +197,7 @@ The repository embodies several performance rules from the architecture baseline
 - richer video/audio details are loaded only for active media and never added to recursive scan-time work;
 - FLAC detail parsing bounds comment buffering and skips unrelated metadata blocks rather than decoding media payloads;
 - ISO-BMFF audio detail parsing walks bounded box structures and selects the audio track without decoding media payloads;
+- Ogg detail parsing bounds header pages and packet buffering, and obtains duration from a bounded file-tail window rather than scanning the complete audio payload;
 - stale async multimedia detail results cannot overwrite a newly activated preview;
 - media discovery is batched and streamed;
 - the frontend maintains indexed media lookup rather than repeated linear activation searches;
@@ -224,7 +227,7 @@ Pull-request CI classifies changed paths and runs only the relevant jobs. Depend
 
 The repository has extensive unit/contract coverage for scanning, metadata/cache behavior, query projection, Masonry/Justified layout, viewport virtualization, camera/spatial behavior, Canvas LOD/controller behavior, resource scheduling/leases/cancellation, renderer texture lifetime, workspace sharing, media activation/navigation, on-demand multimedia detail parsing, stale-safe preview detail loading, shared selection lifecycle and semantic input mapping.
 
-FLAC parser tests cover STREAMINFO duration/codec, Vorbis Comment title/artist, non-FLAC input and malformed/truncated metadata. ISO-BMFF audio parser tests cover M4A-style duration/audio codec extraction, rejection of video tracks as audio codec sources and non-ISO input. Selection tests cover replace/toggle behavior, primary selection, source/session invalidation, preservation across query projection changes and rejection of missing media. Desktop input tests cover click-to-select semantics and ensure drag/middle-button gestures do not accidentally select. Touch input tests cover tap selection, single-contact pan, two-contact midpoint pan/pinch, pinch-to-single-contact continuation, cancellation and contact-count bounds.
+FLAC parser tests cover STREAMINFO duration/codec, Vorbis Comment title/artist, non-FLAC input and malformed/truncated metadata. ISO-BMFF audio parser tests cover M4A-style duration/audio codec extraction, rejection of video tracks as audio codec sources and non-ISO input. Ogg tests cover Vorbis duration/comments, Opus pre-skip duration and OpusTags, non-Ogg input and invalid pre-skip/granule combinations. Selection tests cover replace/toggle behavior, primary selection, source/session invalidation, preservation across query projection changes and rejection of missing media. Desktop input tests cover click-to-select semantics and ensure drag/middle-button gestures do not accidentally select. Touch input tests cover tap selection, single-contact pan, two-contact midpoint pan/pinch, pinch-to-single-contact continuation, cancellation and contact-count bounds.
 
 A deterministic in-memory benchmark harness covers the major layout/query hot paths. `pnpm bench` runs streamed 10k construction/index benchmarks and prepared 50k visibility-query benchmarks, while normal frontend build type-checks the benchmark source. Large-dataset contract tests remain the merge-gating performance assertions.
 
