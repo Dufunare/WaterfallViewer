@@ -1,0 +1,70 @@
+name: Windows Release Candidate
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: windows-release-candidate-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Build Windows x64 NSIS package
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build NSIS release candidate
+        run: pnpm tauri build --target x86_64-pc-windows-msvc --bundles nsis --ci
+
+      - name: Verify package and write checksum
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe")
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one NSIS installer, found $($installers.Count)."
+          }
+
+          $installer = $installers[0]
+          $hash = (Get-FileHash -Algorithm SHA256 $installer.FullName).Hash.ToLowerInvariant()
+          $checksumPath = Join-Path $installer.Directory.FullName "SHA256SUMS.txt"
+          "$hash  $($installer.Name)" | Set-Content -Encoding ascii $checksumPath
+
+          "### Windows release candidate" >> $env:GITHUB_STEP_SUMMARY
+          "- Package: ``$($installer.Name)``" >> $env:GITHUB_STEP_SUMMARY
+          "- SHA-256: ``$hash``" >> $env:GITHUB_STEP_SUMMARY
+          "- Signing: not configured; this workflow produces an unsigned CI release-candidate artifact." >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload NSIS release candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: waterfallviewer-windows-x64-nsis-${{ github.sha }}
+          path: |
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
