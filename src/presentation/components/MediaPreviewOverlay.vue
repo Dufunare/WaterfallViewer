@@ -9,6 +9,8 @@ import type {
   PreviewMediaDetailController,
   PreviewMediaDetailSnapshot,
 } from "../../application/viewer/previewMediaDetailController";
+import type { ViewerInputAction } from "../../platform/input/actions";
+import { mapDesktopPreviewKey } from "../../platform/input/desktopPreviewInput";
 
 const props = defineProps<{
   activation: MediaActivationController;
@@ -60,33 +62,44 @@ function next(): void {
 }
 
 function onKeyDown(event: KeyboardEvent): void {
-  if (active.value === null) {
+  const current = active.value;
+  if (current === null) {
     return;
   }
 
-  if (event.key === "Escape") {
-    event.preventDefault();
-    close();
+  const action = mapDesktopPreviewKey(
+    {
+      key: event.key,
+      defaultPrevented: event.defaultPrevented,
+      altKey: event.altKey,
+      ctrlKey: event.ctrlKey,
+      metaKey: event.metaKey,
+      shiftKey: event.shiftKey,
+      keepsNativeArrowBehavior: keepsNativeArrowBehavior(event.target),
+    },
+    { hasPrevious: current.hasPrevious, hasNext: current.hasNext },
+  );
+  if (action === null) {
     return;
   }
 
-  if (
-    event.defaultPrevented ||
-    event.altKey ||
-    event.ctrlKey ||
-    event.metaKey ||
-    event.shiftKey ||
-    keepsNativeArrowBehavior(event.target)
-  ) {
-    return;
-  }
+  event.preventDefault();
+  dispatchInputAction(action);
+}
 
-  if (event.key === "ArrowLeft" && active.value.hasPrevious) {
-    event.preventDefault();
-    previous();
-  } else if (event.key === "ArrowRight" && active.value.hasNext) {
-    event.preventDefault();
-    next();
+function dispatchInputAction(action: ViewerInputAction): void {
+  switch (action.type) {
+    case "back":
+      close();
+      break;
+    case "previous":
+      previous();
+      break;
+    case "next":
+      next();
+      break;
+    default:
+      break;
   }
 }
 
