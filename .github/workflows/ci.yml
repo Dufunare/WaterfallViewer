@@ -53,7 +53,7 @@ jobs:
                 rust_core=true
                 tauri_rust=true
                 ;;
-              src/*|tests/*|benchmarks/*|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|.npmrc|index.html|vite.config.*|tsconfig*.json)
+              src/*|tests/*|e2e/*|benchmarks/*|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|.npmrc|index.html|e2e.html|playwright.config.*|vite.config.*|tsconfig*.json)
                 frontend=true
                 ;;
               crates/*)
@@ -115,6 +115,43 @@ jobs:
         run: pnpm test
       - name: Build
         run: pnpm build
+
+  browser-e2e:
+    name: Browser E2E
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install application dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install pinned Playwright test tool
+        shell: bash
+        run: |
+          rm -rf .playwright-tools
+          npm install --prefix .playwright-tools --no-save --package-lock=false @playwright/test@1.63.0
+          mkdir -p node_modules/@playwright
+          ln -sfn "$PWD/.playwright-tools/node_modules/@playwright/test" node_modules/@playwright/test
+      - name: Install Chromium
+        run: .playwright-tools/node_modules/.bin/playwright install --with-deps chromium
+      - name: Run browser end-to-end tests
+        run: .playwright-tools/node_modules/.bin/playwright test
+      - name: Upload Playwright failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-results
+          path: test-results
+          if-no-files-found: ignore
+          retention-days: 7
 
   tauri-rust:
     name: Tauri Rust
