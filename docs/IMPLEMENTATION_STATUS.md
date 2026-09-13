@@ -3,7 +3,7 @@
 > Status: Living implementation baseline
 > Architecture reference: [`ARCHITECTURE.md`](ARCHITECTURE.md) v0.3
 > Baseline date: 2026-09-13
-> Baseline commit: `5eb2887` (`feat(selection): add shared media selection`)
+> Baseline commit: `c39a814` (`feat(input): add touch canvas gestures`)
 
 This document records what the repository actually implements today. `ARCHITECTURE.md` remains the design rationale and long-term direction; when proven implementation choices differ from the original sketch, this document is the source of truth for current behavior until the architecture document is revised.
 
@@ -46,8 +46,9 @@ Media activation
   -> stale-safe preview metadata state
   -> duration/codec plus supported audio title/artist display
 
-Desktop input events
-  -> platform input adapters
+Platform input
+  -> desktop pointer/wheel/keyboard adapters
+  -> touch tap/pan/pinch adapter for Free Canvas
   -> semantic Pan / Zoom / Activate / Select / Back / Previous / Next actions
   -> existing Canvas / Viewer application controllers
 
@@ -58,7 +59,7 @@ Performance validation
   -> large-dataset bounded-work contract tests remain the hard CI gate
 ```
 
-The project is therefore best described as a **working desktop media-browsing core with validated Flow and Free Canvas architectures**, not as a foundation-only repository.
+The project is therefore best described as a **working desktop media-browsing core with validated Flow and Free Canvas architectures and an emerging cross-input boundary**, not as a foundation-only repository.
 
 ## 2. Phase status against `ARCHITECTURE.md`
 
@@ -68,13 +69,11 @@ The project is therefore best described as a **working desktop media-browsing co
 | B. Streaming Image Browser | Complete | Tauri Channel streaming, session replacement/cancellation, incremental Masonry/Justified layout, viewport virtualization and DOM browsing are implemented. |
 | C. Resource Pipeline | Core complete | Thumbnail generation, opaque resource protocol, priority/deduplicating scheduler, persistent visual metadata cache, explicit representation leases, bounded thumbnail disk eviction and cooperative running-generation cancellation exist. Future representation kinds can reuse this lifecycle rather than requiring a new resource architecture. |
 | D. Free Canvas | Core complete | World-space scene, camera, spatial index, LOD policy, bounded viewport snapshots and PixiJS renderer are implemented and share the same media session/query/selection as Flow. |
-| E. Multimedia | Partial, materially advanced | Animated image, video and audio remain visible in browsing; explicit preview/playback exists; video dimensions have a container fast path. Video/audio details are now loaded on demand outside the scan hot path and displayed in preview for supported metadata. Poster/cover representations and broader container/tag coverage remain. |
+| E. Multimedia | Partial, materially advanced | Animated image, video and audio remain visible in browsing; explicit preview/playback exists; video dimensions have a container fast path. Video/audio details are loaded on demand outside the scan hot path and displayed in preview for supported metadata. Poster/cover representations and broader container/tag coverage remain. |
 | F. Theme & Runtime Customization | Early | A small CSS-variable base exists, but formal token families, theme packs and optional visual-effect modules are not yet implemented. |
-| G. Mobile Adapter | Foundation started | Desktop Canvas and Preview input map platform events into semantic viewer actions; Canvas selection now also uses the semantic input contract. Touch/pinch mapping, mobile source adapters and mobile resource budgets remain unimplemented. |
+| G. Mobile Adapter | In progress | Desktop semantic input exists and Free Canvas now accepts touch tap, one-finger pan and two-finger pan/pinch through the same semantic actions. Mobile source/resource adapters, mobile resource budgets and broader mobile interaction/UI adaptation remain. |
 
 ## 3. Validated architecture decisions
-
-The following original architecture principles have held up in implementation and should remain invariants.
 
 ### 3.1 Rust core stays independent of Tauri
 
@@ -98,7 +97,7 @@ As of `e03d13e`, scheduled thumbnail results are consumer leases. Deduplicated s
 
 Disk persistence and live protocol registration remain separate lifetimes. As of `f67b1ac`, the thumbnail disk cache has an explicit high-water/target pruning policy. Active representation registrations protect their backing files from eviction, recently published files receive a short race-safety grace period, and cache-maintenance failure degrades cache behavior rather than media browsing.
 
-As of `ad07866`, the scheduler also owns backend-work interest. One shared consumer cancelling does not abort work still needed by another consumer; after the final consumer leaves, the scheduler aborts the backend request and removes that job from deduplication. The Tauri adapter carries the cancellation through a request ID and bounded request registry to a platform-independent Rust cancellation token. Thumbnail generation observes cancellation between decode/resize/encode/write/publication stages, and late cancellation releases any derived registration created during the race.
+As of `ad07866`, the scheduler also owns backend-work interest. One shared consumer cancelling does not abort work still needed by another consumer; after the final consumer leaves, the scheduler aborts the backend request and removes that job from deduplication. The Tauri adapter carries cancellation through a request ID and bounded request registry to a platform-independent Rust cancellation token. Thumbnail generation observes cancellation between decode/resize/encode/write/publication stages, and late cancellation releases any derived registration created during the race.
 
 This cancellation is intentionally cooperative. Third-party decode/resize/encode calls are not forcibly interrupted mid-call; cancellation is observed at the next safe pipeline boundary.
 
@@ -110,15 +109,17 @@ As of `ba9cb6e`, `PreviewMediaDetailController` observes activation as a sidecar
 
 ### 3.7 Platform input is translated before application behavior
 
-As of `b74b176`, desktop free-canvas drag/wheel/double-click input and preview keyboard navigation are translated by `src/platform/input` adapters into platform-neutral actions before reaching application behavior. Presentation still owns DOM event hookup and DOM-native-control detection, but it no longer owns drag delta semantics, wheel zoom scaling or Escape/adjacent-navigation key meaning.
+As of `b74b176`, desktop free-canvas drag/wheel/double-click input and preview keyboard navigation are translated by `src/platform/input` adapters into platform-neutral actions before reaching application behavior. Presentation owns DOM event hookup and DOM-native-control detection, but not drag delta semantics, wheel zoom scaling or preview key meaning.
 
-As of `5eb2887`, Canvas primary-click selection also flows through this contract as `Select` with explicit `replace` / `toggle` semantics. Dragging and middle-button navigation do not accidentally select. Future touch/pinch/tap mapping should emit the same action vocabulary rather than adding mobile-specific branches to Canvas or Viewer controllers.
+As of `5eb2887`, Canvas primary-click selection also flows through this contract as `Select` with explicit `replace` / `toggle` semantics. Dragging and middle-button navigation do not accidentally select.
+
+As of `c39a814`, touch input follows the same boundary. `TouchCanvasInputAdapter` maps a stationary one-finger tap to `Select`, one-finger movement to `Pan`, and a two-contact gesture to midpoint `Pan` plus anchored `Zoom`. Pinch/cancelled/moved gestures cannot synthesize a tap selection. `CanvasBrowserController`, camera/scene models, selection state and Pixi renderer remain unaware of touch-specific concepts.
 
 ### 3.8 Performance numbers and performance invariants are separate tools
 
 As of `9a056cc`, the repository has a reproducible synthetic benchmark harness for the hot in-memory layout/query paths. Deterministic mixed-media fixtures are streamed in 64-item batches, matching the application data path closely enough to compare algorithmic changes without requiring a real filesystem corpus.
 
-The current benchmark suite measures 10,000-item incremental Masonry, Justified and Canvas scene/index construction plus prepared 50,000-item Masonry and Canvas visibility queries. It is run explicitly with `pnpm bench`; benchmark sources are still type-checked by the regular frontend build so they cannot silently drift from application APIs.
+The current benchmark suite measures 10,000-item incremental Masonry, Justified and Canvas scene/index construction plus prepared 50,000-item Masonry and Canvas visibility queries. It is run explicitly with `pnpm bench`; benchmark sources are type-checked by the regular frontend build so they cannot silently drift from application APIs.
 
 Benchmark latency is intentionally **not** an absolute GitHub-hosted-runner merge gate. Shared-runner timing is too noisy for meaningful fixed thresholds. Before/after optimization measurements should be compared on the same machine under comparable power and thermal conditions, with multiple runs and medians. `tests/largeDatasetContracts.test.ts` remains the CI enforcement layer for bounded work such as visible/render-set sizes and representation-request counts.
 
@@ -126,7 +127,7 @@ Benchmark latency is intentionally **not** an absolute GitHub-hosted-runner merg
 
 As of `5eb2887`, `MediaSelectionController` owns session-scoped selection independently of Flow and Canvas. It supports replace and toggle semantics plus a deterministic primary item. A source/session replacement clears selection; query, filter and sort projection changes within the same session do not.
 
-Flow and Canvas only translate interaction into selection operations and render lightweight selection chrome. The Canvas scene model, layout models, Pixi renderer and representation scheduler do not own selection. This keeps selection orthogonal to resource lifetime and rendering strategy and allows future commands or mobile input to consume the same state.
+Flow and Canvas translate interaction into selection operations and render lightweight selection chrome. The Canvas scene model, layout models, Pixi renderer and representation scheduler do not own selection. This keeps selection orthogonal to resource lifetime and rendering strategy and allows future commands or mobile input to consume the same state.
 
 ## 4. Intentional deviations from the original sketch
 
@@ -154,24 +155,24 @@ This decomposition is preferred: the user-visible session remains shared, while 
 
 ### 4.3 The Rust representation application layer remains deliberately light
 
-Scanning follows the Core/Port/Infrastructure/Tauri boundary strongly. Representation work now has a real lifecycle spanning the frontend scheduler, Tauri request/registration registries and platform-independent infrastructure cancellation/cache primitives, but it still does not require a heavyweight Rust `RequestRepresentation` use-case hierarchy.
+Scanning follows the Core/Port/Infrastructure/Tauri boundary strongly. Representation work has a real lifecycle spanning the frontend scheduler, Tauri request/registration registries and platform-independent infrastructure cancellation/cache primitives, but it still does not require a heavyweight Rust `RequestRepresentation` use-case hierarchy.
 
 Cancellation alone did not justify adding abstraction for symmetry. Formalize a separate representation application service when multiple representation kinds, cross-platform providers, policy composition or richer derived-media dependencies make that boundary materially useful.
 
 ## 5. Current architecture debt and next priorities
 
-The resource pipeline's core lifecycle is closed for image thumbnails, the first on-demand multimedia metadata path is live, desktop semantic input and shared media selection are concrete, and deterministic layout/query benchmarking exists. The next work should deepen media browsing and engineering validation rather than add abstraction solely for completeness.
+The resource pipeline's core lifecycle is closed for image thumbnails, on-demand multimedia metadata is live, desktop and touch Canvas input share a semantic boundary, shared media selection is concrete, and deterministic layout/query benchmarking exists. The next work should deepen media browsing and engineering validation rather than add abstraction solely for completeness.
 
 1. **Poster/cover representations and broader multimedia coverage.** Generate low-cost video poster/audio cover representations through the existing resource lifecycle when a lightweight implementation is justified, and expand metadata coverage without moving full decoding into scan-time work. Do not introduce a heavyweight video decoder merely to satisfy the old architecture sketch.
-2. **Touch input adapter.** Reuse the semantic action contract for touch/pinch/tap gestures before broader mobile UI work; avoid mobile-specific branches inside Canvas/Viewer application controllers.
-3. **Theme/effect boundary.** Replace remaining hard-coded presentation values with coherent design tokens, then add runtime themes/effects only after functional behavior is stable.
-4. **I/O benchmarks, telemetry and E2E.** The deterministic in-memory layout/query benchmark harness now exists, but representative filesystem scanning/metadata/thumbnail benchmark data, explicit memory/GPU/cache-hit telemetry and end-to-end interaction tests are still missing.
-5. **Selection commands only when justified.** Shared selection now exists; bulk actions, export/delete workflows or selection-dependent panels should be added only when a concrete browsing workflow requires them rather than invented for completeness.
+2. **Theme/effect boundary.** Replace remaining hard-coded presentation values with coherent design tokens, then add runtime themes/effects only after functional behavior is stable.
+3. **I/O benchmarks, telemetry and E2E.** The deterministic in-memory layout/query benchmark harness exists, but representative filesystem scanning/metadata/thumbnail benchmark data, explicit memory/GPU/cache-hit telemetry and end-to-end interaction tests are still missing.
+4. **Broader mobile interaction parity.** Free Canvas touch navigation is implemented, but preview gestures/controls, mobile layout decisions and source-picking UX still need explicit platform work rather than implicit desktop reuse.
+5. **Selection commands only when justified.** Shared selection exists; bulk actions, export/delete workflows or selection-dependent panels should be added only when a concrete browsing workflow requires them rather than invented for completeness.
 6. **Mobile source/resource adapters.** Keep current ports platform-neutral; implement Android/iOS source/resource adapters and mobile resource budgets after desktop behavior is mature.
 
 ## 6. Performance contracts already established
 
-The repository already embodies several performance rules from the architecture baseline:
+The repository embodies several performance rules from the architecture baseline:
 
 - dimensions are read through metadata/header paths where possible rather than by full decode;
 - richer video/audio details are loaded only for active media and never added to recursive scan-time work;
@@ -188,6 +189,7 @@ The repository already embodies several performance rules from the architecture 
 - thumbnail disk persistence has an explicit bounded pruning policy and protects actively registered representations;
 - stale session and stale async representation results are ignored/released;
 - selection chrome is bounded by the already bounded visible Flow/Canvas item sets and does not expand representation work;
+- touch gesture translation performs only constant-size contact bookkeeping and does not change scene/query complexity;
 - deterministic 10k/50k layout and visibility-query benchmarks provide reproducible before/after evidence without turning noisy hosted-runner milliseconds into false precision.
 
 These are part of the architecture contract and should be protected by tests when changed.
@@ -201,9 +203,9 @@ Pull-request CI classifies changed paths and runs only the relevant jobs. Depend
 - Tauri lockfile verification, fmt, Clippy and tests;
 - integrated desktop `tauri build --no-bundle --ci` smoke build.
 
-The repository has extensive unit/contract coverage for scanning, metadata/cache behavior, query projection, Masonry/Justified layout, viewport virtualization, camera/spatial behavior, Canvas LOD/controller behavior, resource scheduling/leases/cancellation, renderer texture lifetime, workspace sharing, media activation/navigation, on-demand multimedia detail parsing, stale-safe preview detail loading, shared selection lifecycle and semantic desktop input mapping.
+The repository has extensive unit/contract coverage for scanning, metadata/cache behavior, query projection, Masonry/Justified layout, viewport virtualization, camera/spatial behavior, Canvas LOD/controller behavior, resource scheduling/leases/cancellation, renderer texture lifetime, workspace sharing, media activation/navigation, on-demand multimedia detail parsing, stale-safe preview detail loading, shared selection lifecycle and semantic input mapping.
 
-Selection tests cover replace/toggle behavior, primary selection, source/session invalidation, preservation across query projection changes and rejection of missing media. Desktop input tests cover click-to-select semantics and ensure drag/middle-button gestures do not accidentally select.
+Selection tests cover replace/toggle behavior, primary selection, source/session invalidation, preservation across query projection changes and rejection of missing media. Desktop input tests cover click-to-select semantics and ensure drag/middle-button gestures do not accidentally select. Touch input tests cover tap selection, single-contact pan, two-contact midpoint pan/pinch, pinch-to-single-contact continuation, cancellation and contact-count bounds.
 
 A deterministic in-memory benchmark harness covers the major layout/query hot paths. `pnpm bench` runs streamed 10k construction/index benchmarks and prepared 50k visibility-query benchmarks, while normal frontend build type-checks the benchmark source. Large-dataset contract tests remain the merge-gating performance assertions.
 
