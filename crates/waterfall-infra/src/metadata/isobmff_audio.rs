@@ -194,7 +194,10 @@ fn read_text_data<R: Read + Seek>(reader: &mut R, data: IsoBox) -> io::Result<Op
         1 => String::from_utf8(value).ok(),
         2 => decode_utf16be(&value),
         _ => None,
-    }?;
+    };
+    let Some(text) = text else {
+        return Ok(None);
+    };
     let text = text.trim_matches('\0').trim();
     if text.is_empty() {
         Ok(None)
@@ -397,7 +400,7 @@ fn read_iso_box<R: Read + Seek>(
 mod tests {
     use std::io::Cursor;
 
-    use super::read_iso_bmff_audio_detail;
+    use super::{read_iso_bmff_audio_detail, ITUNES_ARTIST, ITUNES_TITLE};
 
     #[test]
     fn reads_m4a_duration_and_audio_codec() {
