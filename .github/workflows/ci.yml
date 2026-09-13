@@ -22,6 +22,7 @@ jobs:
       frontend: ${{ steps.filter.outputs.frontend }}
       rust_core: ${{ steps.filter.outputs.rust_core }}
       tauri_rust: ${{ steps.filter.outputs.tauri_rust }}
+      powershell_scripts: ${{ steps.filter.outputs.powershell_scripts }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -38,12 +39,14 @@ jobs:
             echo "frontend=true" >> "$GITHUB_OUTPUT"
             echo "rust_core=true" >> "$GITHUB_OUTPUT"
             echo "tauri_rust=true" >> "$GITHUB_OUTPUT"
+            echo "powershell_scripts=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           frontend=false
           rust_core=false
           tauri_rust=false
+          powershell_scripts=false
 
           while IFS= read -r path; do
             echo "changed: $path"
@@ -52,6 +55,7 @@ jobs:
                 frontend=true
                 rust_core=true
                 tauri_rust=true
+                powershell_scripts=true
                 ;;
               src/*|tests/*|e2e/*|benchmarks/*|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|.npmrc|index.html|e2e.html|playwright.config.*|vite.config.*|tsconfig*.json)
                 frontend=true
@@ -63,6 +67,9 @@ jobs:
               src-tauri/*)
                 tauri_rust=true
                 ;;
+              scripts/*.ps1|scripts/**/*.ps1)
+                powershell_scripts=true
+                ;;
               Cargo.toml|Cargo.lock|rust-toolchain|rust-toolchain.toml)
                 rust_core=true
                 tauri_rust=true
@@ -73,6 +80,7 @@ jobs:
           echo "frontend=$frontend" >> "$GITHUB_OUTPUT"
           echo "rust_core=$rust_core" >> "$GITHUB_OUTPUT"
           echo "tauri_rust=$tauri_rust" >> "$GITHUB_OUTPUT"
+          echo "powershell_scripts=$powershell_scripts" >> "$GITHUB_OUTPUT"
 
   rust-core:
     name: Rust core
@@ -152,6 +160,38 @@ jobs:
           path: test-results
           if-no-files-found: ignore
           retention-days: 7
+
+  powershell-scripts:
+    name: PowerShell scripts
+    needs: changes
+    if: needs.changes.outputs.powershell_scripts == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse repository PowerShell scripts
+        shell: pwsh
+        run: |
+          $allErrors = @()
+          Get-ChildItem "scripts" -Recurse -File -Filter "*.ps1" | ForEach-Object {
+            $tokens = $null
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName,
+              [ref]$tokens,
+              [ref]$parseErrors
+            ) | Out-Null
+
+            foreach ($parseError in $parseErrors) {
+              $allErrors += "$($_.FullName):$($parseError.Extent.StartLineNumber): $($parseError.Message)"
+            }
+          }
+
+          if ($allErrors.Count -gt 0) {
+            $allErrors | ForEach-Object { Write-Error $_ }
+            throw "PowerShell syntax validation failed."
+          }
+
+          Write-Host "PowerShell syntax validation passed."
 
   tauri-rust:
     name: Tauri Rust
