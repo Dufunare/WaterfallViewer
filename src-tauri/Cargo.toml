@@ -9,6 +9,10 @@ edition = "2021"
 name = "waterfallviewer_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+default = []
+native-e2e = []
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

@@ -1,0 +1,85 @@
+name: Native Tauri E2E
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/native-e2e.yml
+      - native-e2e/**
+      - src/**
+      - src-tauri/**
+      - crates/**
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - vite.config.*
+      - index.html
+
+concurrency:
+  group: native-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  native-e2e:
+    name: Real Tauri WebView E2E
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux and WebDriver dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            webkit2gtk-driver \
+            xvfb
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install pinned WebDriver tools
+        run: |
+          cargo install tauri-driver --locked --version 2.0.6
+          npm install --prefix .webdriver-tools --no-save --package-lock=false \
+            @wdio/cli@9.19.0 \
+            @wdio/local-runner@9.19.0 \
+            @wdio/mocha-framework@9.19.0 \
+            @wdio/spec-reporter@9.19.0
+
+      - name: Create deterministic native media corpus
+        shell: bash
+        run: |
+          corpus="$RUNNER_TEMP/waterfall-native-e2e-source"
+          mkdir -p "$corpus/nested"
+          printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII=' | base64 --decode > "$corpus/nested/native-fixture.png"
+          printf '%s\n' 'this file must be ignored by the media scanner' > "$corpus/ignored.txt"
+          echo "WATERFALL_NATIVE_E2E_SOURCE=$corpus" >> "$GITHUB_ENV"
+
+      - name: Build native E2E application
+        run: pnpm tauri build --debug --no-bundle --ci --features native-e2e
+
+      - name: Run native WebDriver E2E
+        run: xvfb-run -a .webdriver-tools/node_modules/.bin/wdio run native-e2e/wdio.conf.mjs
