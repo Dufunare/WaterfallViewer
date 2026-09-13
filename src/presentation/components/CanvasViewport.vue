@@ -13,6 +13,11 @@ import type {
   CanvasBrowserSnapshot,
 } from "../../application/canvas/canvasBrowserController";
 import { hitTestCanvasItems } from "../../application/canvas/canvasHitTest";
+import {
+  DesktopCanvasInputAdapter,
+  type InputBounds,
+} from "../../platform/input/desktopCanvasInput";
+import type { ViewerInputAction } from "../../platform/input/actions";
 import { PixiCanvasRenderer } from "../../renderers/pixi/pixiCanvasRenderer";
 
 const props = defineProps<{
@@ -25,6 +30,7 @@ const emit = defineEmits<{
 const host = ref<HTMLElement | null>(null);
 const browser = markRaw(props.createBrowser());
 const renderer = markRaw(new PixiCanvasRenderer());
+const input = markRaw(new DesktopCanvasInputAdapter());
 const snapshot = shallowRef<CanvasBrowserSnapshot>(browser.snapshot);
 const rendererError = ref<string | null>(null);
 const dragging = ref(false);
@@ -32,9 +38,6 @@ const dragging = ref(false);
 let unsubscribe: (() => void) | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let resizeFrame: number | null = null;
-let activePointerId: number | null = null;
-let lastPointerX = 0;
-let lastPointerY = 0;
 let disposed = false;
 
 const zoomLabel = computed(() => `${Math.round(snapshot.value.camera.zoom * 100)}%`);
@@ -64,37 +67,25 @@ function syncViewport(): void {
 }
 
 function onPointerDown(event: PointerEvent): void {
-  if (event.button !== 0 && event.button !== 1) {
-    return;
-  }
   const element = host.value;
   if (element === null) {
     return;
   }
 
-  activePointerId = event.pointerId;
-  lastPointerX = event.clientX;
-  lastPointerY = event.clientY;
+  const result = input.beginPointer(event);
+  if (!result.accepted || result.pointerId === null) {
+    return;
+  }
   dragging.value = true;
-  element.setPointerCapture(event.pointerId);
+  element.setPointerCapture(result.pointerId);
 }
 
 function onPointerMove(event: PointerEvent): void {
-  if (activePointerId !== event.pointerId) {
-    return;
-  }
-
-  const deltaX = event.clientX - lastPointerX;
-  const deltaY = event.clientY - lastPointerY;
-  lastPointerX = event.clientX;
-  lastPointerY = event.clientY;
-  if (deltaX !== 0 || deltaY !== 0) {
-    browser.panByScreen({ x: deltaX, y: deltaY });
-  }
+  dispatchInputAction(input.movePointer(event));
 }
 
 function endPointer(event: PointerEvent): void {
-  if (activePointerId !== event.pointerId) {
+  if (!input.endPointer(event.pointerId)) {
     return;
   }
 
@@ -102,37 +93,56 @@ function endPointer(event: PointerEvent): void {
   if (element?.hasPointerCapture(event.pointerId)) {
     element.releasePointerCapture(event.pointerId);
   }
-  activePointerId = null;
   dragging.value = false;
 }
 
 function onWheel(event: WheelEvent): void {
-  const element = host.value;
-  if (element === null) {
+  const bounds = hostBounds();
+  if (bounds === null) {
     return;
   }
-
-  const rect = element.getBoundingClientRect();
-  const exponent = Math.max(-2, Math.min(2, -event.deltaY * 0.0015));
-  browser.zoomByFactorAtScreen(Math.exp(exponent), {
-    x: event.clientX - rect.left,
-    y: event.clientY - rect.top,
-  });
+  dispatchInputAction(input.wheel(event, bounds));
 }
 
 function onDoubleClick(event: MouseEvent): void {
-  const element = host.value;
-  if (element === null) {
+  const bounds = hostBounds();
+  if (bounds === null) {
     return;
   }
-  const rect = element.getBoundingClientRect();
-  const item = hitTestCanvasItems(snapshot.value.items, {
-    x: event.clientX - rect.left,
-    y: event.clientY - rect.top,
-  });
-  if (item !== null) {
-    emit("activate", item.mediaId);
+  dispatchInputAction(input.activate(event, bounds));
+}
+
+function dispatchInputAction(action: ViewerInputAction | null): void {
+  if (action === null) {
+    return;
   }
+
+  switch (action.type) {
+    case "pan":
+      browser.panByScreen(action.delta);
+      break;
+    case "zoom":
+      browser.zoomByFactorAtScreen(action.factor, action.anchor);
+      break;
+    case "activate-at": {
+      const item = hitTestCanvasItems(snapshot.value.items, action.point);
+      if (item !== null) {
+        emit("activate", item.mediaId);
+      }
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+function hostBounds(): InputBounds | null {
+  const element = host.value;
+  if (element === null) {
+    return null;
+  }
+  const rect = element.getBoundingClientRect();
+  return { left: rect.left, top: rect.top };
 }
 
 function fitContent(): void {
@@ -192,6 +202,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   disposed = true;
+  input.reset();
   unsubscribe?.();
   resizeObserver?.disconnect();
   if (resizeFrame !== null) {
