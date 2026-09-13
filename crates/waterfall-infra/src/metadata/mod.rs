@@ -1,6 +1,8 @@
 mod cache;
 mod detail;
+mod flac;
 mod header;
+mod media_detail;
 mod sqlite;
 mod video;
 
@@ -9,6 +11,6 @@ pub use cache::{
     VisualMetadataCacheError, VisualMetadataCacheKey, VisualMetadataCacheLookup,
     DEFAULT_VISUAL_METADATA_CACHE_ENTRIES, VISUAL_METADATA_PARSER_VERSION,
 };
-pub use detail::read_media_detail;
 pub use header::HeaderVisualMetadataReader;
+pub use media_detail::read_media_detail;
 pub use sqlite::SqliteVisualMetadataCache;
