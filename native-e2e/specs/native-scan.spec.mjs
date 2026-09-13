@@ -13,9 +13,11 @@ describe("native Tauri viewer", () => {
 
     const bodyText = await $("body").getText();
     expect(bodyText).toContain("1 media");
-    expect(bodyText).toContain("native-fixture.png");
 
-    const image = await $('img[alt="native-fixture.png"]');
+    const tile = await $('figure[title*="nested/native-fixture.png"]');
+    await tile.waitForDisplayed();
+
+    const image = await tile.$('img[alt="native-fixture.png"]');
     await image.waitForDisplayed();
 
     const source = await image.getAttribute("src");
