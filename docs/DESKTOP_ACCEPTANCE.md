@@ -21,7 +21,8 @@ Required evidence:
 - exactly one `*-setup.exe` is present;
 - `SHA256SUMS.txt` is produced and matches the installer;
 - the CI package is explicitly treated as unsigned unless signing infrastructure is later configured;
-- the release executable passes the native startup smoke once that gate is merged.
+- the release executable passes the native startup smoke;
+- the NSIS package passes the installed-package smoke: silent install to an isolated directory, installed executable startup, and silent uninstall with removal of the installed application binary.
 
 Failure of any item above blocks acceptance. Do not waive a failing automated gate through a manual checklist.
 
@@ -53,7 +54,7 @@ Pass criteria:
 - a second launch after normal shutdown behaves the same way;
 - no stale background process remains after normal close.
 
-The automated native startup smoke only proves that the release executable remains alive during its smoke interval. It does not replace these interactive checks.
+Automation now proves two narrower facts: the release executable itself remains alive during a startup smoke interval, and the exact NSIS artifact can be silently installed to an isolated directory, launched from the installed location, and silently uninstalled. It still does **not** prove that the native window painted correctly, that a user-driven close follows the normal shutdown path, or that a second interactive launch is healthy. Those remain interactive checks.
 
 ## 4. Native source picker and filesystem traversal
 
@@ -165,17 +166,25 @@ Process memory may be recorded as supporting evidence, but allocator/WebView cac
 
 For a release candidate intended for distribution, validate the NSIS artifact itself.
 
-Pass criteria:
+Automated release-candidate evidence now covers:
+
+- silent installation of the exact generated `*-setup.exe` on a Windows runner;
+- launch of the executable from the installed directory;
+- startup survival for the smoke interval;
+- silent uninstall;
+- removal of the installed application binary.
+
+Interactive/release-environment pass criteria still include:
 
 - installer starts on a clean Windows user environment compatible with the target baseline;
 - installation completes without requiring repository/development files;
-- installed application launches successfully;
+- installed application opens a usable native window;
 - a reinstall/upgrade over the same version does not corrupt the application;
 - uninstall removes the installed application entry and binaries expected to be owned by the package;
 - user media files are never modified or removed by uninstall;
 - unsigned CI packages are not described as production-signed releases.
 
-When signing is introduced, signature verification becomes a separate mandatory release gate.
+The CI smoke deliberately installs into an isolated runner directory and disables shortcut creation, so it does not prove Start Menu/Desktop shortcut behavior, Add/Remove Programs presentation, upgrade semantics, or user-driven uninstall UI. When signing is introduced, signature verification becomes a separate mandatory release gate.
 
 ## 11. Acceptance record
 
