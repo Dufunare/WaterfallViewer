@@ -102,7 +102,7 @@ describe("representation leases", () => {
     expect(port.releases).toEqual(["derived-orphan"]);
   });
 
-  it("lets a new subscriber rejoin orphaned running work and owns the resulting lease", async () => {
+  it("does not rejoin orphaned running work when the backend ignores cancellation", async () => {
     const port = new LeaseTrackingPort();
     const scheduler = new RepresentationScheduler(port, { maxConcurrent: 1 });
     const abortController = new AbortController();
@@ -120,7 +120,7 @@ describe("representation leases", () => {
     abortController.abort();
     await cancelled;
 
-    const retained = scheduler.requestThumbnail({
+    const replacement = scheduler.requestThumbnail({
       resourceKey: "source",
       maxEdge: 512,
       priority: "visible",
@@ -128,13 +128,21 @@ describe("representation leases", () => {
     await flushMicrotasks();
     expect(port.calls).toHaveLength(1);
 
-    port.resolve(0, "derived-rejoined");
-    const lease = await retained;
-    expect(port.releases).toEqual([]);
+    // This fake port intentionally ignores the backend AbortSignal. The old
+    // work therefore occupies its concurrency slot until it completes, but its
+    // result is orphaned and must not be handed to the replacement consumer.
+    port.resolve(0, "derived-orphan");
+    await flushMicrotasks();
+    expect(port.releases).toEqual(["derived-orphan"]);
+    expect(port.calls).toHaveLength(2);
+
+    port.resolve(1, "derived-replacement");
+    const lease = await replacement;
+    expect(port.releases).toEqual(["derived-orphan"]);
 
     lease.release();
     await flushMicrotasks();
-    expect(port.releases).toEqual(["derived-rejoined"]);
+    expect(port.releases).toEqual(["derived-orphan", "derived-replacement"]);
   });
 
   it("releases once per backend job even when later jobs resolve to the same derived key", async () => {
