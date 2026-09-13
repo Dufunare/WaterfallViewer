@@ -3,7 +3,7 @@
 > Status: Living implementation baseline
 > Architecture reference: [`ARCHITECTURE.md`](ARCHITECTURE.md) v0.3
 > Baseline date: 2026-09-13
-> Baseline commit: `ba9cb6e` (`feat(viewer): show on-demand multimedia details in preview`)
+> Baseline commit: `b74b176` (`feat(input): introduce semantic desktop input adapters`)
 
 This document records what the repository actually implements today. `ARCHITECTURE.md` remains the design rationale and long-term direction; when proven implementation choices differ from the original sketch, this document is the source of truth for current behavior until the architecture document is revised.
 
@@ -39,6 +39,11 @@ Media activation
   -> active video/audio detail request through opaque resource key
   -> stale-safe preview metadata state
   -> duration/codec plus supported audio title/artist display
+
+Desktop input events
+  -> platform input adapters
+  -> semantic Pan / Zoom / Activate / Back / Previous / Next actions
+  -> existing Canvas / Viewer application controllers
 ```
 
 The project is therefore best described as a **working desktop media-browsing core with validated Flow and Free Canvas architectures**, not as a foundation-only repository.
@@ -53,7 +58,7 @@ The project is therefore best described as a **working desktop media-browsing co
 | D. Free Canvas | Core complete | World-space scene, camera, spatial index, LOD policy, bounded viewport snapshots and PixiJS renderer are implemented and share the same media session/query as Flow. |
 | E. Multimedia | Partial, materially advanced | Animated image, video and audio remain visible in browsing; explicit preview/playback exists; video dimensions have a container fast path. Video/audio details are now loaded on demand outside the scan hot path and displayed in preview for supported metadata. Poster/cover representations and broader container/tag coverage remain. |
 | F. Theme & Runtime Customization | Early | A small CSS-variable base exists, but formal token families, theme packs and optional visual-effect modules are not yet implemented. |
-| G. Mobile Adapter | Not started | Core boundaries remain mobile-oriented, but mobile source adapters, touch input mapping and mobile resource budgets are not implemented. |
+| G. Mobile Adapter | Foundation started | Desktop Canvas and Preview input now map platform events into semantic viewer actions. Touch/pinch mapping, mobile source adapters and mobile resource budgets remain unimplemented. |
 
 ## 3. Validated architecture decisions
 
@@ -91,6 +96,12 @@ As of `22121d8`, richer video/audio details are requested only for an explicitly
 
 As of `ba9cb6e`, `PreviewMediaDetailController` observes activation as a sidecar rather than turning navigation into asynchronous state. It rejects stale results after rapid previous/next navigation and degrades metadata failures without affecting media playback. Image and animated-image activation does not trigger this detail I/O.
 
+### 3.7 Platform input is translated before application behavior
+
+As of `b74b176`, desktop free-canvas drag/wheel/double-click input and preview keyboard navigation are translated by `src/platform/input` adapters into platform-neutral actions before reaching application behavior. Presentation still owns DOM event hookup and DOM-native-control detection, but it no longer owns drag delta semantics, wheel zoom scaling or Escape/adjacent-navigation key meaning.
+
+The action vocabulary already includes `Pan`, `Zoom`, `Activate`, `Back`, `Previous`, `Next` and a reserved `Select` action. Future touch/pinch mapping should emit the same actions rather than adding mobile-specific branches to Canvas or Viewer controllers.
+
 ## 4. Intentional deviations from the original sketch
 
 These are not treated as regressions. They reflect implementation experience and should normally be documented rather than mechanically rewritten to match the earlier diagram.
@@ -123,14 +134,14 @@ Cancellation alone did not justify adding abstraction for symmetry. Formalize a 
 
 ## 5. Current architecture debt and next priorities
 
-The resource pipeline's core lifecycle is closed for image thumbnails, and the first on-demand multimedia metadata path is now live. The next work should deepen media browsing rather than add abstraction solely for completeness.
+The resource pipeline's core lifecycle is closed for image thumbnails, the first on-demand multimedia metadata path is live, and the desktop input boundary now has a concrete semantic adapter. The next work should deepen media browsing and engineering validation rather than add abstraction solely for completeness.
 
-1. **Poster/cover representations and broader multimedia coverage.** Generate low-cost video poster/audio cover representations through the existing resource lifecycle, and expand metadata coverage where useful without moving full decoding into scan-time work.
+1. **Poster/cover representations and broader multimedia coverage.** Generate low-cost video poster/audio cover representations through the existing resource lifecycle when a lightweight implementation is justified, and expand metadata coverage without moving full decoding into scan-time work. Do not introduce a heavyweight video decoder merely to satisfy the old architecture sketch.
 2. **Selection model.** Selection remains intentionally absent from the current browsing core even though it was present in the original session sketch.
-3. **Input abstraction.** Desktop pointer/keyboard handling still reaches presentation/controller code directly. Introduce semantic `Pan`, `Zoom`, `Activate`, `Back`, `Next`, `Previous`, `Select` mapping before mobile work expands.
+3. **Touch input adapter.** Reuse the semantic action contract for touch/pinch gestures before broader mobile UI work; avoid mobile-specific branches inside Canvas/Viewer application controllers.
 4. **Theme/effect boundary.** Replace remaining hard-coded presentation values with coherent design tokens, then add runtime themes/effects only after functional behavior is stable.
 5. **Formal benchmarks and E2E.** Unit/contract coverage is broad and desktop release smoke builds run in CI, but the benchmark dataset/metrics harness and end-to-end interaction suite described in `ARCHITECTURE.md` are still missing.
-6. **Mobile adapters.** Keep current ports platform-neutral; implement Android/iOS source/input/resource adapters only after desktop resource behavior is mature.
+6. **Mobile source/resource adapters.** Keep current ports platform-neutral; implement Android/iOS source/resource adapters and mobile resource budgets after desktop behavior is mature.
 
 ## 6. Performance contracts already established
 
@@ -162,7 +173,7 @@ Pull-request CI classifies changed paths and runs only the relevant jobs. Depend
 - Tauri lockfile verification, fmt, Clippy and tests;
 - integrated desktop `tauri build --no-bundle --ci` smoke build.
 
-The repository has extensive unit/contract coverage for scanning, metadata/cache behavior, query projection, Masonry/Justified layout, viewport virtualization, camera/spatial behavior, Canvas LOD/controller behavior, resource scheduling/leases/cancellation, renderer texture lifetime, workspace sharing, media activation/navigation, on-demand multimedia detail parsing and stale-safe preview detail loading.
+The repository has extensive unit/contract coverage for scanning, metadata/cache behavior, query projection, Masonry/Justified layout, viewport virtualization, camera/spatial behavior, Canvas LOD/controller behavior, resource scheduling/leases/cancellation, renderer texture lifetime, workspace sharing, media activation/navigation, on-demand multimedia detail parsing, stale-safe preview detail loading and semantic desktop input mapping.
 
 Still missing as formal engineering capabilities:
 
@@ -193,6 +204,6 @@ Rust application/core contracts
 Infrastructure adapters
 ```
 
-The exact number of layers is less important than the boundary: **UI does not own filesystem/media work; renderers do not own media state; Rust core does not own Vue/Tauri concerns; caches remain disposable; expensive work remains bounded and progressively cancellable.**
+The exact number of layers is less important than the boundary: **UI does not own filesystem/media work; renderers do not own media state; Rust core does not own Vue/Tauri concerns; caches remain disposable; expensive work remains bounded and progressively cancellable; platform input becomes semantic before it reaches application behavior.**
 
 When implementation experience shows that a proposed abstraction is unnecessary, update the documentation rather than adding complexity solely to satisfy an old diagram.
