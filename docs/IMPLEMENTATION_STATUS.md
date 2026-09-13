@@ -3,7 +3,7 @@
 > Status: Living implementation baseline
 > Architecture reference: [`ARCHITECTURE.md`](ARCHITECTURE.md) v0.3
 > Baseline date: 2026-09-13
-> Baseline commit: `c39a814` (`feat(input): add touch canvas gestures`)
+> Baseline commit: `7a4c37a` (`refactor(theme): establish semantic presentation tokens`)
 
 This document records what the repository actually implements today. `ARCHITECTURE.md` remains the design rationale and long-term direction; when proven implementation choices differ from the original sketch, this document is the source of truth for current behavior until the architecture document is revised.
 
@@ -52,6 +52,12 @@ Platform input
   -> semantic Pan / Zoom / Activate / Select / Back / Previous / Next actions
   -> existing Canvas / Viewer application controllers
 
+Presentation theme boundary
+  -> semantic core palette tokens
+  -> semantic status/danger tokens
+  -> overlay/HUD/shadow/blur effect tokens
+  -> Flow / Canvas / Preview consume theme values without owning palette constants
+
 Performance validation
   -> deterministic mixed-media synthetic fixtures
   -> 10k incremental Masonry / Justified / Canvas build benchmarks
@@ -59,7 +65,7 @@ Performance validation
   -> large-dataset bounded-work contract tests remain the hard CI gate
 ```
 
-The project is therefore best described as a **working desktop media-browsing core with validated Flow and Free Canvas architectures and an emerging cross-input boundary**, not as a foundation-only repository.
+The project is therefore best described as a **working desktop media-browsing core with validated Flow and Free Canvas architectures, an emerging cross-input boundary, and a concrete semantic theme boundary**, not as a foundation-only repository.
 
 ## 2. Phase status against `ARCHITECTURE.md`
 
@@ -70,8 +76,8 @@ The project is therefore best described as a **working desktop media-browsing co
 | C. Resource Pipeline | Core complete | Thumbnail generation, opaque resource protocol, priority/deduplicating scheduler, persistent visual metadata cache, explicit representation leases, bounded thumbnail disk eviction and cooperative running-generation cancellation exist. Future representation kinds can reuse this lifecycle rather than requiring a new resource architecture. |
 | D. Free Canvas | Core complete | World-space scene, camera, spatial index, LOD policy, bounded viewport snapshots and PixiJS renderer are implemented and share the same media session/query/selection as Flow. |
 | E. Multimedia | Partial, materially advanced | Animated image, video and audio remain visible in browsing; explicit preview/playback exists; video dimensions have a container fast path. Video/audio details are loaded on demand outside the scan hot path and displayed in preview for supported metadata. Poster/cover representations and broader container/tag coverage remain. |
-| F. Theme & Runtime Customization | Early | A small CSS-variable base exists, but formal token families, theme packs and optional visual-effect modules are not yet implemented. |
-| G. Mobile Adapter | In progress | Desktop semantic input exists and Free Canvas now accepts touch tap, one-finger pan and two-finger pan/pinch through the same semantic actions. Mobile source/resource adapters, mobile resource budgets and broader mobile interaction/UI adaptation remain. |
+| F. Theme & Runtime Customization | Foundation established | Semantic palette/state/overlay/effect tokens now back the main Flow, Canvas and Preview visual surfaces. Runtime theme packs, user theme selection and optional effect modules are not yet implemented. |
+| G. Mobile Adapter | In progress | Desktop semantic input exists and Free Canvas accepts touch tap, one-finger pan and two-finger pan/pinch through the same semantic actions. Mobile source/resource adapters, mobile resource budgets and broader mobile interaction/UI adaptation remain. |
 
 ## 3. Validated architecture decisions
 
@@ -129,6 +135,12 @@ As of `5eb2887`, `MediaSelectionController` owns session-scoped selection indepe
 
 Flow and Canvas translate interaction into selection operations and render lightweight selection chrome. The Canvas scene model, layout models, Pixi renderer and representation scheduler do not own selection. This keeps selection orthogonal to resource lifetime and rendering strategy and allows future commands or mobile input to consume the same state.
 
+### 3.10 Theme tokens describe reusable visual meaning, not component geometry
+
+As of `7a4c37a`, `src/theme/base.css` defines semantic token groups for the core palette, status/danger states and overlay/effect surfaces. Flow placeholders, Canvas HUD/error chrome and Preview overlays/navigation consume those variables rather than embedding their own palette/effect constants.
+
+The token boundary is intentionally narrower than a full design system. Theme variables express reusable visual meaning such as `danger-surface` or `floating-surface`; they do not absorb view-specific widths, gaps, media-query breakpoints or geometry merely to remove numeric literals. Runtime theme packs can later override the semantic values without changing layout or application behavior.
+
 ## 4. Intentional deviations from the original sketch
 
 These are not treated as regressions. They reflect implementation experience and should normally be documented rather than mechanically rewritten to match the earlier diagram.
@@ -161,10 +173,10 @@ Cancellation alone did not justify adding abstraction for symmetry. Formalize a 
 
 ## 5. Current architecture debt and next priorities
 
-The resource pipeline's core lifecycle is closed for image thumbnails, on-demand multimedia metadata is live, desktop and touch Canvas input share a semantic boundary, shared media selection is concrete, and deterministic layout/query benchmarking exists. The next work should deepen media browsing and engineering validation rather than add abstraction solely for completeness.
+The resource pipeline's core lifecycle is closed for image thumbnails, on-demand multimedia metadata is live, desktop and touch Canvas input share a semantic boundary, shared media selection is concrete, the semantic theme boundary is established, and deterministic layout/query benchmarking exists. The next work should deepen media browsing and engineering validation rather than add abstraction solely for completeness.
 
 1. **Poster/cover representations and broader multimedia coverage.** Generate low-cost video poster/audio cover representations through the existing resource lifecycle when a lightweight implementation is justified, and expand metadata coverage without moving full decoding into scan-time work. Do not introduce a heavyweight video decoder merely to satisfy the old architecture sketch.
-2. **Theme/effect boundary.** Replace remaining hard-coded presentation values with coherent design tokens, then add runtime themes/effects only after functional behavior is stable.
+2. **Runtime themes/effects only after a concrete UX need.** The semantic override boundary now exists. Finish isolated remaining presentation literals opportunistically, but do not build a theme-pack/plugin system before there is a real product requirement.
 3. **I/O benchmarks, telemetry and E2E.** The deterministic in-memory layout/query benchmark harness exists, but representative filesystem scanning/metadata/thumbnail benchmark data, explicit memory/GPU/cache-hit telemetry and end-to-end interaction tests are still missing.
 4. **Broader mobile interaction parity.** Free Canvas touch navigation is implemented, but preview gestures/controls, mobile layout decisions and source-picking UX still need explicit platform work rather than implicit desktop reuse.
 5. **Selection commands only when justified.** Shared selection exists; bulk actions, export/delete workflows or selection-dependent panels should be added only when a concrete browsing workflow requires them rather than invented for completeness.
