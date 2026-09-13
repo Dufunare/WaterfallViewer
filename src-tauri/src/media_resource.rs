@@ -209,7 +209,9 @@ impl MediaResourceRegistry {
         Ok(remove)
     }
 
-    pub fn telemetry_snapshot(&self) -> Result<MediaResourceTelemetrySnapshot, ResourceRegistryError> {
+    pub fn telemetry_snapshot(
+        &self,
+    ) -> Result<MediaResourceTelemetrySnapshot, ResourceRegistryError> {
         let state = self
             .inner
             .lock()
@@ -223,14 +225,15 @@ impl MediaResourceRegistry {
 
         let derived_resource_keys = session.derived_keys.len() as u64;
         let total_resource_keys = session.paths.len() as u64;
-        let derived_registrations = session.derived_keys.values().try_fold(
-            0u64,
-            |total, registration| {
-                total
-                    .checked_add(registration.registrations)
-                    .ok_or(ResourceRegistryError::ExhaustedRegistrations)
-            },
-        )?;
+        let derived_registrations =
+            session
+                .derived_keys
+                .values()
+                .try_fold(0u64, |total, registration| {
+                    total
+                        .checked_add(registration.registrations)
+                        .ok_or(ResourceRegistryError::ExhaustedRegistrations)
+                })?;
 
         Ok(MediaResourceTelemetrySnapshot {
             active_session: true,
