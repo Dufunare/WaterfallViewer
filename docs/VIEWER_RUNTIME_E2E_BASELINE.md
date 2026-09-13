@@ -2,12 +2,13 @@
 
 > Status: incremental living baseline supplement
 > Baseline date: 2026-09-13
-> Baseline commit: `1e8ebdf7` (`refactor(bootstrap): extract viewer runtime composition`)
+> Runtime composition baseline: `1e8ebdf7` (`refactor(bootstrap): extract viewer runtime composition`)
+> Deterministic browser fixture baseline: `0b08d3cf` (`test(e2e): add deterministic browser fixture`)
 > Parent living status: [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md)
 
-This document records the application-composition seam established before introducing browser or desktop end-to-end automation.
+This document records the application-composition seam and deterministic browser fixture established before adding full browser or desktop end-to-end automation.
 
-## Production composition is now explicit
+## Production composition is explicit
 
 `src/bootstrap/viewerRuntime.ts` owns the production frontend controller graph through `createViewerRuntime(...)`. The factory receives platform ports rather than importing Tauri adapters itself:
 
@@ -19,19 +20,36 @@ This document records the application-composition seam established before introd
 
 The factory constructs the shared `MediaSessionController`, query and selection controllers, representation scheduler, workspace, activation/detail controllers, Flow browser, and the shared Canvas scene used by remounted Canvas browser controllers.
 
-`src/main.ts` is now a thin platform composition root: it supplies the real Tauri adapters, marks controller instances as raw for Vue, mounts `App.vue`, and delegates shutdown cleanup to the runtime.
+`src/bootstrap/mountViewerApp.ts` now owns the common Vue root wiring. Production `src/main.ts` supplies the real Tauri ports, creates the runtime, registers shutdown cleanup and mounts `App.vue` through this shared helper.
 
 ## Runtime lifecycle
 
-`ViewerRuntime.dispose()` preserves the previous shutdown order for the long-lived controllers and is idempotent. Canvas browser instances remain owned by the presentation component that creates them, matching the pre-existing mount/unmount lifecycle rather than moving view-local ownership into the application runtime.
+`ViewerRuntime.dispose()` preserves the existing shutdown order for long-lived controllers and is idempotent. Canvas browser instances remain owned by the presentation component that creates them, matching the mount/unmount lifecycle rather than moving view-local ownership into the application runtime.
 
 The shared Canvas scene remains inside the runtime factory so Canvas controller remounts preserve the same camera/world state without starting another scan session.
 
-## Test seam
+## Deterministic browser fixture
 
-The existing shared-viewer integration test now constructs the application through `createViewerRuntime` using fake implementations of the same platform port interfaces. The test no longer duplicates the production controller wiring.
+The repository now contains a browser-facing fixture entry at `e2e.html`.
 
-It verifies that a single source pick and scan session feed:
+`src/testing/seededBrowserMain.ts` mounts the real `App.vue` through the same `mountViewerApp(...)` helper used by production. `src/testing/seededBrowserRuntime.ts` creates the real `ViewerRuntime` and substitutes only deterministic platform ports.
+
+The seeded fixture provides:
+
+- one deterministic source named `Seeded Browser Gallery`;
+- six media items split across two scan batches;
+- four images, one video and one audio item;
+- deterministic thumbnail representations backed by generated SVG data URIs;
+- deterministic video and audio detail metadata;
+- deterministic session IDs.
+
+The fixture does not add a production environment switch or test-mode conditional to `src/main.ts`.
+
+A focused Vitest integration test validates that the seeded ports drive the real runtime graph through source opening, scan completion, query filtering, activation and video/audio detail loading before browser automation is layered on top.
+
+## Existing shared-session integration coverage
+
+The shared-viewer integration test also constructs the application through `createViewerRuntime` using fake implementations of the same platform port interfaces. It verifies that a single source pick and scan session feed:
 
 - workspace state;
 - query projection;
@@ -39,26 +57,24 @@ It verifies that a single source pick and scan session feed:
 - Canvas browsing;
 - a remounted Canvas controller that retains the shared scene/camera state.
 
-This keeps the production composition authoritative while allowing deterministic platform substitutes in tests.
+Together, these tests keep the production composition authoritative while allowing deterministic platform substitutes in tests.
 
 ## What this does not claim
 
-This is an **E2E/bootstrap foundation**, not a completed end-to-end test system.
+This remains an **E2E foundation**, not a completed end-to-end test system.
 
-There is currently no Playwright dependency, browser-launch test suite, WebDriver/Tauri desktop automation, or test-only alternate application mode. The runtime factory does not contain environment checks or fake behavior.
+There is still no Playwright dependency or browser-launch interaction suite, and no WebDriver/Tauri native desktop automation. The deterministic browser fixture exercises the real Vue presentation and application runtime, but browser automation cannot validate native file-dialog behavior, filesystem traversal, Tauri IPC, or the `waterfall-media` custom protocol.
 
-A later browser fixture can supply deterministic ports to the same runtime factory and exercise real Vue presentation behavior. Native Tauri integration still requires its own desktop-level automation or smoke coverage because browser tests cannot validate file-dialog, custom protocol, filesystem, or native IPC behavior.
+## Next engineering steps toward desktop 1.0
 
-## Next engineering steps
+The E2E work should now proceed in layers:
 
-The next E2E work should remain layered:
+1. add Playwright against `e2e.html` and cover the main deterministic browsing workflow: open source, wait for scan completion, switch Columns/Rows/Canvas, filter/sort, select/activate media and navigate/close preview;
+2. keep browser E2E focused on presentation/application behavior and avoid duplicating runtime composition inside tests;
+3. retain the current Tauri desktop smoke build and add native desktop-level validation separately for source picking, filesystem scanning, custom-protocol media delivery and packaged application behavior.
 
-1. provide a deterministic browser-facing bootstrap that uses the real `createViewerRuntime` and fake platform ports without changing production `main.ts` behavior;
-2. add Playwright only when that fixture can exercise meaningful user workflows such as opening a seeded source, switching Flow/Canvas, activating media, navigating preview, filtering/sorting, and selection;
-3. retain the existing Tauri desktop smoke build and add native desktop automation separately when it becomes reliable enough to justify CI cost.
-
-Do not treat browser E2E as proof of Tauri filesystem/IPC correctness, and do not duplicate the controller graph inside test code.
+Do not treat browser E2E as proof of Tauri filesystem/IPC correctness.
 
 ## CI baseline
 
-The composition refactor passed the complete frontend Vitest suite and TypeScript/Vite build. The shared-session integration test uses the same runtime factory as production and validates shared session/scene behavior after the refactor.
+The deterministic browser fixture slice passed the complete frontend Vitest suite and TypeScript/Vite build before merge. Rust/Tauri jobs were correctly skipped because the slice changed only frontend/test paths.
