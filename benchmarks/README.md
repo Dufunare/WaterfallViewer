@@ -8,6 +8,8 @@ Run them with:
 pnpm bench
 ```
 
+Benchmark files use Vitest's benchmark project and are intentionally excluded from the normal `pnpm test` run. The regular frontend `pnpm build` still type-checks `benchmarks/**/*.ts`, so benchmark source cannot silently drift out of sync with application APIs.
+
 ## Current benchmark set
 
 The benchmark fixtures generate deterministic mixed-media datasets. Every 20 items contain one video, one audio item, one animated image, and seventeen still images. Items are streamed into the models in batches of 64 to mirror the application's incremental data path.
