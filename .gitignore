@@ -17,6 +17,9 @@ dist-ssr
 test-results
 playwright-report
 
+# Local release/performance acceptance captures
+acceptance-results
+
 # Rust workspace build output
 /crates/target
 
