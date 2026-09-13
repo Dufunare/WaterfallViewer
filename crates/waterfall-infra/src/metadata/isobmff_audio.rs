@@ -6,6 +6,9 @@ use std::{
 use waterfall_core::{AudioDetail, MetadataReadFailure};
 
 const MAX_BOXES: usize = 100_000;
+const MAX_TEXT_TAG_BYTES: u64 = 256 * 1024;
+const ITUNES_TITLE: [u8; 4] = [0xa9, b'n', b'a', b'm'];
+const ITUNES_ARTIST: [u8; 4] = [0xa9, b'A', b'R', b'T'];
 
 pub(super) fn read_iso_bmff_audio_detail_file(
     locator: &str,
@@ -55,6 +58,7 @@ fn read_moov_audio_detail<R: Read + Seek>(reader: &mut R, moov: IsoBox) -> io::R
     let mut visited = 0usize;
     let mut duration_ms = None;
     let mut codec = None;
+    let mut udta = None;
 
     while cursor.saturating_add(8) <= moov.end && visited < MAX_BOXES {
         let Some(current) = read_iso_box(reader, cursor, moov.end)? else {
@@ -64,17 +68,153 @@ fn read_moov_audio_detail<R: Read + Seek>(reader: &mut R, moov: IsoBox) -> io::R
         match &current.kind {
             b"mvhd" => duration_ms = read_mvhd_duration(reader, current)?,
             b"trak" if codec.is_none() => codec = read_audio_track_codec(reader, current)?,
+            b"udta" if udta.is_none() => udta = Some(current),
             _ => {}
         }
         cursor = current.end;
     }
 
+    let (title, artist) = match udta {
+        Some(udta) => read_itunes_tags(reader, udta)?,
+        None => (None, None),
+    };
+
     Ok(AudioDetail {
         duration_ms,
-        title: None,
-        artist: None,
+        title,
+        artist,
         codec,
     })
+}
+
+fn read_itunes_tags<R: Read + Seek>(
+    reader: &mut R,
+    udta: IsoBox,
+) -> io::Result<(Option<String>, Option<String>)> {
+    let mut cursor = udta.payload_start;
+    let mut visited = 0usize;
+    while cursor.saturating_add(8) <= udta.end && visited < MAX_BOXES {
+        let Some(current) = read_iso_box(reader, cursor, udta.end)? else {
+            break;
+        };
+        visited += 1;
+        if &current.kind == b"meta" {
+            return read_meta_tags(reader, current);
+        }
+        cursor = current.end;
+    }
+    Ok((None, None))
+}
+
+fn read_meta_tags<R: Read + Seek>(
+    reader: &mut R,
+    meta: IsoBox,
+) -> io::Result<(Option<String>, Option<String>)> {
+    let mut cursor = meta.payload_start.saturating_add(4);
+    if cursor > meta.end {
+        return Ok((None, None));
+    }
+
+    let mut visited = 0usize;
+    while cursor.saturating_add(8) <= meta.end && visited < MAX_BOXES {
+        let Some(current) = read_iso_box(reader, cursor, meta.end)? else {
+            break;
+        };
+        visited += 1;
+        if &current.kind == b"ilst" {
+            return read_ilst_tags(reader, current);
+        }
+        cursor = current.end;
+    }
+    Ok((None, None))
+}
+
+fn read_ilst_tags<R: Read + Seek>(
+    reader: &mut R,
+    ilst: IsoBox,
+) -> io::Result<(Option<String>, Option<String>)> {
+    let mut cursor = ilst.payload_start;
+    let mut visited = 0usize;
+    let mut title = None;
+    let mut artist = None;
+
+    while cursor.saturating_add(8) <= ilst.end && visited < MAX_BOXES {
+        let Some(current) = read_iso_box(reader, cursor, ilst.end)? else {
+            break;
+        };
+        visited += 1;
+        if current.kind == ITUNES_TITLE && title.is_none() {
+            title = read_text_item(reader, current)?;
+        } else if current.kind == ITUNES_ARTIST && artist.is_none() {
+            artist = read_text_item(reader, current)?;
+        }
+        if title.is_some() && artist.is_some() {
+            break;
+        }
+        cursor = current.end;
+    }
+
+    Ok((title, artist))
+}
+
+fn read_text_item<R: Read + Seek>(reader: &mut R, item: IsoBox) -> io::Result<Option<String>> {
+    let mut cursor = item.payload_start;
+    let mut visited = 0usize;
+    while cursor.saturating_add(8) <= item.end && visited < MAX_BOXES {
+        let Some(current) = read_iso_box(reader, cursor, item.end)? else {
+            break;
+        };
+        visited += 1;
+        if &current.kind == b"data" {
+            return read_text_data(reader, current);
+        }
+        cursor = current.end;
+    }
+    Ok(None)
+}
+
+fn read_text_data<R: Read + Seek>(reader: &mut R, data: IsoBox) -> io::Result<Option<String>> {
+    let header_end = data.payload_start.saturating_add(8);
+    if header_end > data.end {
+        return Ok(None);
+    }
+
+    reader.seek(SeekFrom::Start(data.payload_start))?;
+    let mut header = [0u8; 8];
+    reader.read_exact(&mut header)?;
+    let data_type = u32::from_be_bytes(header[..4].try_into().expect("data type")) & 0x00ff_ffff;
+    let value_len = data.end.saturating_sub(header_end);
+    if value_len == 0 || value_len > MAX_TEXT_TAG_BYTES {
+        return Ok(None);
+    }
+
+    let mut value = vec![0u8; value_len as usize];
+    reader.read_exact(&mut value)?;
+    let text = match data_type {
+        1 => String::from_utf8(value).ok(),
+        2 => decode_utf16be(&value),
+        _ => None,
+    }?;
+    let text = text.trim_matches('\0').trim();
+    if text.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(text.to_string()))
+    }
+}
+
+fn decode_utf16be(data: &[u8]) -> Option<String> {
+    if !data.len().is_multiple_of(2) {
+        return None;
+    }
+    let mut units = Vec::with_capacity(data.len() / 2);
+    for bytes in data.chunks_exact(2) {
+        units.push(u16::from_be_bytes([bytes[0], bytes[1]]));
+    }
+    if units.first() == Some(&0xfeff) {
+        units.remove(0);
+    }
+    String::from_utf16(&units).ok()
 }
 
 fn read_mvhd_duration<R: Read + Seek>(reader: &mut R, mvhd: IsoBox) -> io::Result<Option<u64>> {
@@ -278,6 +418,65 @@ mod tests {
             .expect("ISO-BMFF audio detail");
         assert_eq!(detail.duration_ms, Some(12_345));
         assert_eq!(detail.codec.as_deref(), Some("mp4a"));
+        assert_eq!(detail.title, None);
+        assert_eq!(detail.artist, None);
+    }
+
+    #[test]
+    fn reads_itunes_title_and_artist() {
+        let title = text_item(ITUNES_TITLE, 1, b"Waterfall");
+        let artist = text_item(ITUNES_ARTIST, 1, b"Viewer");
+        let ilst = boxed(b"ilst", &[title, artist].concat());
+        let mut meta_payload = vec![0u8; 4];
+        meta_payload.extend_from_slice(&ilst);
+        let meta = boxed(b"meta", &meta_payload);
+        let udta = boxed(b"udta", &meta);
+        let moov = boxed(b"moov", &udta);
+        let len = moov.len() as u64;
+
+        let detail = read_iso_bmff_audio_detail(&mut Cursor::new(moov), len)
+            .unwrap()
+            .expect("ISO-BMFF audio detail");
+        assert_eq!(detail.title.as_deref(), Some("Waterfall"));
+        assert_eq!(detail.artist.as_deref(), Some("Viewer"));
+    }
+
+    #[test]
+    fn reads_utf16be_itunes_text() {
+        let title_bytes: Vec<u8> = "瀑布"
+            .encode_utf16()
+            .flat_map(u16::to_be_bytes)
+            .collect();
+        let title = text_item(ITUNES_TITLE, 2, &title_bytes);
+        let ilst = boxed(b"ilst", &title);
+        let mut meta_payload = vec![0u8; 4];
+        meta_payload.extend_from_slice(&ilst);
+        let meta = boxed(b"meta", &meta_payload);
+        let udta = boxed(b"udta", &meta);
+        let moov = boxed(b"moov", &udta);
+        let len = moov.len() as u64;
+
+        let detail = read_iso_bmff_audio_detail(&mut Cursor::new(moov), len)
+            .unwrap()
+            .expect("ISO-BMFF audio detail");
+        assert_eq!(detail.title.as_deref(), Some("瀑布"));
+    }
+
+    #[test]
+    fn ignores_non_text_itunes_data() {
+        let title = text_item(ITUNES_TITLE, 13, b"not-text");
+        let ilst = boxed(b"ilst", &title);
+        let mut meta_payload = vec![0u8; 4];
+        meta_payload.extend_from_slice(&ilst);
+        let meta = boxed(b"meta", &meta_payload);
+        let udta = boxed(b"udta", &meta);
+        let moov = boxed(b"moov", &udta);
+        let len = moov.len() as u64;
+
+        let detail = read_iso_bmff_audio_detail(&mut Cursor::new(moov), len)
+            .unwrap()
+            .expect("ISO-BMFF audio detail");
+        assert_eq!(detail.title, None);
     }
 
     #[test]
@@ -319,6 +518,14 @@ mod tests {
 
     fn full_box(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
         boxed(kind, payload)
+    }
+
+    fn text_item(kind: [u8; 4], data_type: u32, text: &[u8]) -> Vec<u8> {
+        let mut data_payload = (data_type & 0x00ff_ffff).to_be_bytes().to_vec();
+        data_payload.extend_from_slice(&0u32.to_be_bytes());
+        data_payload.extend_from_slice(text);
+        let data = boxed(b"data", &data_payload);
+        boxed(&kind, &data)
     }
 
     fn mvhd_payload(timescale: u32, duration: u32) -> Vec<u8> {
