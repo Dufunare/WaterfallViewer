@@ -411,11 +411,11 @@ fn decode_id3_text(data: &[u8]) -> Option<String> {
             } else {
                 0
             };
-            for chunk in body[start..].chunks_exact(2) {
+            for chunk in body[start..].as_chunks::<2>().0 {
                 units.push(if be {
-                    u16::from_be_bytes([chunk[0], chunk[1]])
+                    u16::from_be_bytes(*chunk)
                 } else {
-                    u16::from_le_bytes([chunk[0], chunk[1]])
+                    u16::from_le_bytes(*chunk)
                 });
             }
             String::from_utf16_lossy(&units)
