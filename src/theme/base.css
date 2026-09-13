@@ -7,13 +7,41 @@
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
 
+  /* Core theme palette. */
   --wf-bg: #0d0e10;
   --wf-surface: #15171a;
   --wf-surface-raised: #1b1e22;
+  --wf-surface-subtle: rgba(255, 255, 255, 0.025);
   --wf-border: rgba(255, 255, 255, 0.1);
+  --wf-border-strong: rgba(255, 255, 255, 0.12);
   --wf-text: #f3f4f6;
   --wf-text-muted: rgba(243, 244, 246, 0.62);
+  --wf-text-on-overlay: rgba(255, 255, 255, 0.88);
   --wf-accent: #d9dde4;
+
+  /* Semantic state colors. */
+  --wf-status-idle: rgba(255, 255, 255, 0.3);
+  --wf-status-active: #9ca3af;
+  --wf-status-active-ring: rgba(156, 163, 175, 0.12);
+  --wf-danger: #ef8b8b;
+  --wf-danger-border: rgba(239, 139, 139, 0.28);
+  --wf-danger-surface: rgba(95, 30, 34, 0.9);
+  --wf-danger-text: #ffd2d2;
+
+  /* Overlay and lightweight effect tokens. */
+  --wf-overlay-backdrop: rgba(4, 5, 7, 0.84);
+  --wf-overlay-panel: #0b0c0f;
+  --wf-media-stage: #050608;
+  --wf-floating-surface: rgba(12, 13, 17, 0.7);
+  --wf-floating-surface-hover: rgba(28, 30, 37, 0.88);
+  --wf-hud-surface: rgba(21, 23, 26, 0.84);
+  --wf-placeholder-sheen: rgba(255, 255, 255, 0.025);
+  --wf-loading-indicator: rgba(255, 255, 255, 0.16);
+  --wf-shadow-dialog: 0 24px 80px rgba(0, 0, 0, 0.45);
+  --wf-blur-overlay: blur(12px);
+  --wf-blur-floating: blur(8px);
+  --wf-blur-hud: blur(10px);
+
   --wf-toolbar-height: 54px;
 }
 

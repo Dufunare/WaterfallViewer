@@ -251,8 +251,8 @@ onBeforeUnmount(() => {
   display: grid;
   place-items: center;
   padding: 28px;
-  background: rgba(4, 5, 7, 0.84);
-  backdrop-filter: blur(12px);
+  background: var(--wf-overlay-backdrop);
+  backdrop-filter: var(--wf-blur-overlay);
 }
 
 .preview-panel {
@@ -264,8 +264,8 @@ onBeforeUnmount(() => {
   overflow: hidden;
   border: 1px solid var(--wf-border);
   border-radius: 12px;
-  background: #0b0c0f;
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+  background: var(--wf-overlay-panel);
+  box-shadow: var(--wf-shadow-dialog);
 }
 
 .preview-header {
@@ -359,7 +359,7 @@ onBeforeUnmount(() => {
   display: grid;
   place-items: center;
   overflow: hidden;
-  background: #050608;
+  background: var(--wf-media-stage);
 }
 
 .preview-nav {
@@ -371,14 +371,14 @@ onBeforeUnmount(() => {
   display: grid;
   place-items: center;
   transform: translateY(-50%);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid var(--wf-border-strong);
   border-radius: 10px;
-  background: rgba(12, 13, 17, 0.7);
-  color: rgba(255, 255, 255, 0.88);
+  background: var(--wf-floating-surface);
+  color: var(--wf-text-on-overlay);
   font-size: 2rem;
   line-height: 1;
   cursor: pointer;
-  backdrop-filter: blur(8px);
+  backdrop-filter: var(--wf-blur-floating);
 }
 
 .preview-nav-previous {
@@ -390,7 +390,7 @@ onBeforeUnmount(() => {
 }
 
 .preview-nav:hover:not(:disabled) {
-  background: rgba(28, 30, 37, 0.88);
+  background: var(--wf-floating-surface-hover);
 }
 
 .preview-nav:disabled {
