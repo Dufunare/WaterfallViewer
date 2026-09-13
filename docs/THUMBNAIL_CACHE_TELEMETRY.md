@@ -8,7 +8,7 @@
 > Canvas texture telemetry baseline: `7763356a` (`feat(telemetry): add Canvas texture lease snapshot`)
 > Parent living status: [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md)
 
-This document records the runtime cache/request/resource/Canvas telemetry behavior added after the current `IMPLEMENTATION_STATUS.md` baseline. It is intentionally narrow and should be folded back into the main living status when that document is next updated through a safe whole-file edit.
+This document records the runtime cache/request/resource/Canvas telemetry behavior used by the current desktop baseline. The main living status now includes the existence of these diagnostics; this supplement remains the detailed source for metric semantics and intentional limitations.
 
 ## Runtime cache telemetry
 
@@ -87,7 +87,7 @@ Starting a new source session replaces the previous generation and resets all cu
 
 ## Runtime Canvas texture-lifetime telemetry
 
-The Pixi Canvas renderer now exposes an on-demand in-process snapshot through `PixiCanvasRenderer.telemetrySnapshot()`:
+The Pixi Canvas renderer exposes an on-demand in-process snapshot through `PixiCanvasRenderer.telemetrySnapshot()`:
 
 - `initialized`: whether the renderer currently owns a live Pixi application;
 - `renderedItems`: the current bounded render-record count;
@@ -99,7 +99,7 @@ The underlying `AssetLeasePool.telemetrySnapshot()` computes `entries`, `totalRe
 
 ### Texture convergence semantics
 
-Canvas culling and scene updates already remove off-screen render records and release their texture leases. The new snapshot makes that lifecycle observable: after render records disappear, texture refs should fall accordingly; after final release, an entry may transiently remain in `unloadingTextureEntries` until its existing backend unload finishes, after which the entry itself is removed.
+Canvas culling and scene updates already remove off-screen render records and release their texture leases. The snapshot makes that lifecycle observable: after render records disappear, texture refs should fall accordingly; after final release, an entry may transiently remain in `unloadingTextureEntries` until its existing backend unload finishes, after which the entry itself is removed.
 
 Multiple rendered items can legitimately share a texture URI, so `textureRefs` can exceed `textureEntries`. Likewise, `textureEntries` can temporarily exceed the number of live refs while asynchronous final unload is still in flight. These distinctions are useful when diagnosing leaks or delayed cleanup and should not be collapsed into a single "texture count" metric.
 
@@ -113,13 +113,14 @@ Canvas texture telemetry is synchronous and bounded by the already bounded lease
 
 No frontend polling, dashboard or always-on diagnostics loop has been introduced. Consumers may explicitly request snapshots when diagnostics are needed.
 
-The following remain out of scope and are still engineering debt:
+The following remain out of scope or engineering debt:
 
-- representative real-corpus benchmark result baselines;
-- process memory telemetry;
+- representative real-corpus benchmark and telemetry acceptance baselines;
+- long-session convergence reports using the existing cache/request/resource/texture snapshots;
+- process-memory telemetry;
 - true PixiJS/WebGL GPU-memory or driver-level allocation telemetry;
-- end-to-end telemetry presentation/diagnostic UX;
-- Playwright/Tauri end-to-end interaction tests;
+- end-user telemetry presentation/diagnostic UX;
+- native Tauri/WebView interaction validation (browser Playwright E2E now exists separately);
 - continuous disk usage accounting between maintenance passes.
 
 ## Tests and CI
@@ -130,6 +131,6 @@ Request-registry tests cover active cancellation visibility, cancellation-before
 
 Media-resource tests cover source/derived key counting, shared derived-registration reference counts, convergence after partial and final release, and reset to a fresh generation when a new source session begins. Existing generation invalidation, URI range handling and MIME behavior remain covered by their pre-existing tests.
 
-Frontend `AssetLeasePool` tests now also cover telemetry for shared references, the final-release unloading interval, deferred loads that finish after their final consumer leaves, safe same-key reacquisition and `releaseAll` convergence. The regular frontend build type-checks the renderer snapshot surface.
+Frontend `AssetLeasePool` tests cover telemetry for shared references, the final-release unloading interval, deferred loads that finish after their final consumer leaves, safe same-key reacquisition and `releaseAll` convergence. The regular frontend build type-checks the renderer snapshot surface.
 
-The backend telemetry slices passed Tauri lockfile verification, rustfmt, Clippy, Rust tests and the integrated desktop smoke build before merge. The Canvas texture telemetry slice passed the regular frontend Vitest suite and TypeScript/Vite build before merge.
+The backend telemetry slices passed Tauri lockfile verification, rustfmt, Clippy, Rust tests and the integrated desktop smoke build before merge. The Canvas texture telemetry slice passed the regular frontend Vitest suite and TypeScript/Vite build before merge. Later browser E2E and Windows desktop smoke work did not change telemetry semantics; they provide additional validation layers around the same application.

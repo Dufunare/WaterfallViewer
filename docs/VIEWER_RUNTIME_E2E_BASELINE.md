@@ -5,9 +5,10 @@
 > Runtime composition baseline: `1e8ebdf7` (`refactor(bootstrap): extract viewer runtime composition`)
 > Deterministic browser fixture baseline: `0b08d3cf` (`test(e2e): add deterministic browser fixture`)
 > Playwright browser E2E baseline: `eace87b1` (`test(e2e): add Playwright desktop main-flow coverage`)
+> Windows desktop smoke baseline: `b135a964` (`ci(desktop): add Windows smoke build`)
 > Parent living status: [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md)
 
-This document records the application-composition seam, deterministic browser fixture, and browser-level end-to-end coverage used to validate the desktop viewer main flow without duplicating production application wiring.
+This document records the application-composition seam, deterministic browser fixture, browser-level end-to-end coverage, and current integrated desktop build gates used to validate the desktop viewer without duplicating production application wiring.
 
 ## Production composition is explicit
 
@@ -71,16 +72,18 @@ Vitest is explicitly scoped to `tests/` so unit/integration suites and Playwrigh
 
 ## CI behavior
 
-Frontend-affecting changes now run both:
+Frontend-affecting changes run both:
 
-- the existing Frontend job: frozen pnpm install, Vitest and TypeScript/Vite build;
+- the Frontend job: frozen pnpm install, Vitest and TypeScript/Vite build;
 - the Browser E2E job: frozen application install, pinned Playwright 1.63.0 Chromium setup and the deterministic browser workflow.
 
 Playwright remains a CI-only pinned test tool in this baseline rather than a checked-in pnpm devDependency. The application dependency install still uses `pnpm install --frozen-lockfile`; the E2E job installs the pinned Playwright tool into an isolated `.playwright-tools` prefix and links only the test package into the job-local `node_modules` for test-module resolution. This avoids hand-editing `pnpm-lock.yaml` or weakening frozen-lockfile validation.
 
 On browser-test failure, Playwright trace/screenshot output under `test-results` is uploaded as a short-retention CI artifact. Local Playwright tool/output directories are ignored by Git.
 
-The first merged browser-E2E slice passed Frontend, Browser E2E, Rust core, Tauri Rust and the integrated desktop smoke build in one CI run.
+Tauri-affecting changes also run integrated `pnpm tauri build --no-bundle --ci` smoke builds on both Linux and Windows. The Windows gate runs on `windows-latest` with the stable Rust/MSVC toolchain and the same frozen frontend dependency install. This proves that the integrated application compiles on the primary Windows desktop target in addition to Linux; it does not create or execute an installer.
+
+The Playwright slice passed Frontend, Browser E2E, Rust core, Tauri Rust and Linux desktop smoke in one CI run. The Windows-smoke slice subsequently passed the complete matrix including the new Windows integrated build.
 
 ## Existing shared-session integration coverage
 
@@ -96,25 +99,25 @@ Together, these tests keep the production composition authoritative while allowi
 
 ## What this does not claim
 
-Browser E2E is now a real merge gate, but it still does **not** validate the native Tauri boundary.
+Browser E2E is a real merge gate, and Linux/Windows smoke builds prove integrated compilation, but neither layer validates native interactive behavior.
 
-The deterministic browser suite cannot prove:
+The current automated suite does not yet prove:
 
 - native directory-picker behavior;
-- real recursive filesystem traversal and permissions;
-- Tauri Channel/command serialization;
+- real recursive filesystem traversal and permissions inside the packaged desktop application;
+- Tauri Channel/command serialization under an interactive WebView session;
 - the `waterfall-media` custom protocol and HTTP Range behavior inside the desktop WebView;
-- packaged desktop application startup and installer behavior.
+- installer creation, installation, upgrade/uninstall behavior, signing, or packaged-app startup after installation.
 
-The existing desktop smoke build verifies that the integrated application compiles, but it is not interactive native automation.
+The smoke builds intentionally use `--no-bundle`; they are compile/integration gates, not release-package validation.
 
 ## Next engineering steps toward desktop 1.0
 
-The next E2E/release work should remain layered:
+The remaining E2E/release work should stay layered:
 
 1. keep the deterministic browser main-flow suite as the fast presentation/application regression gate and extend it only when a concrete desktop workflow requires coverage;
-2. add native desktop-level validation for source picking, real filesystem scanning, custom-protocol delivery and packaged-app startup without pretending browser E2E proves those paths;
-3. add representative real-corpus acceptance baselines using the existing scan/detail/thumbnail benchmark tools and runtime telemetry before declaring desktop 1.0 performance-ready;
-4. establish a release/bundle workflow and final Windows acceptance checklist once native behavior and performance baselines are stable.
+2. establish a Windows bundle/release-candidate workflow that produces inspectable package artifacts without conflating unsigned CI packages with signed production releases;
+3. add native desktop-level validation for source picking, real filesystem scanning, custom-protocol delivery and packaged-app startup, using automation where practical and an explicit acceptance checklist where runner limitations make GUI automation disproportionate;
+4. add representative real-corpus acceptance baselines using the existing scan/detail/thumbnail benchmark tools and runtime telemetry before declaring desktop 1.0 performance-ready.
 
 Do not duplicate the controller graph inside native or browser tests, and do not move expensive native-media behavior into the deterministic browser fixture solely to make it look more production-like.

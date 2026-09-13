@@ -3,7 +3,7 @@
 > Status: Living implementation baseline
 > Architecture reference: [`ARCHITECTURE.md`](ARCHITECTURE.md) v0.3
 > Baseline date: 2026-09-13
-> Baseline commit: `e64dbda` (`feat(bench): add thumbnail pipeline benchmark`)
+> Baseline commit: `b135a964` (`ci(desktop): add Windows smoke build`)
 
 This document records what the repository actually implements today. `ARCHITECTURE.md` remains the design rationale and long-term direction; when proven implementation choices differ from the original sketch, this document is the source of truth for current behavior until the architecture document is revised.
 
@@ -59,17 +59,20 @@ Presentation theme boundary
   -> overlay/HUD/shadow/blur effect tokens
   -> Flow / Canvas / Preview consume theme values without owning palette constants
 
-Performance validation
+Performance and validation
   -> deterministic mixed-media synthetic fixtures
   -> 10k incremental Masonry / Justified / Canvas build benchmarks
   -> prepared 50k Flow / Canvas visibility-query benchmarks
   -> production real-filesystem scan/header-metadata benchmark entry point
   -> production active-media detail parser benchmark with per-format statistics
   -> production thumbnail generation/cache-reuse benchmark with per-format miss/hit statistics
-  -> large-dataset bounded-work contract tests remain the hard CI gate
+  -> on-demand cache/request/resource/Canvas texture-lifetime telemetry
+  -> deterministic Chromium Playwright main-flow E2E gate
+  -> Linux + Windows integrated Tauri compile smoke gates
+  -> large-dataset bounded-work contract tests remain the hard performance CI gate
 ```
 
-The project is therefore best described as a **working desktop media-browsing core with validated Flow and Free Canvas architectures, an emerging cross-input boundary, a concrete semantic theme boundary, progressively richer on-demand multimedia metadata, and repeatable performance evidence across in-memory, filesystem-scan, active-detail and thumbnail-generation/cache-reuse paths**, not as a foundation-only repository.
+The project is therefore best described as a **working desktop media browser in Desktop 1.0 validation/release preparation, with validated Flow and Free Canvas architectures, explicit resource lifetimes, semantic cross-input boundaries, concrete runtime telemetry, browser-level main-flow E2E, and repeatable performance evidence across in-memory, filesystem-scan, active-detail and thumbnail-generation/cache-reuse paths**, not as a foundation-only repository.
 
 ## 2. Phase status against `ARCHITECTURE.md`
 
@@ -159,6 +162,16 @@ As of `7a4c37a`, `src/theme/base.css` defines semantic token groups for the core
 
 The token boundary is intentionally narrower than a full design system. Theme variables express reusable visual meaning such as `danger-surface` or `floating-surface`; they do not absorb view-specific widths, gaps, media-query breakpoints or geometry merely to remove numeric literals. Runtime theme packs can later override the semantic values without changing layout or application behavior.
 
+### 3.11 Runtime diagnostics observe existing lifecycles rather than creating new ones
+
+Cache/request telemetry, the media-resource registry snapshot, and Canvas texture-lease telemetry are all read-only views over existing runtime state. They do not add hot-path polling, duplicate ownership registries or filesystem scans. Cache generated/reused registration counts provide an application-level cache reuse signal; request/resource/texture counts make cancellation and lease convergence observable. These values are diagnostic lifecycle signals, not process-memory or GPU/VRAM measurements.
+
+### 3.12 Browser E2E and desktop smoke builds validate different boundaries
+
+The deterministic `e2e.html` fixture mounts the real Vue presentation over the production `createViewerRuntime(...)` controller graph while substituting deterministic platform ports. Playwright therefore validates the main presentation/application workflow without duplicating the production graph.
+
+Linux and Windows `pnpm tauri build --no-bundle --ci` jobs validate integrated desktop compilation on both platform families. They do not validate native picker interaction, real packaged WebView protocol behavior, installer creation or installed-app startup. Those remain separate acceptance concerns rather than reasons to weaken the browser fixture boundary.
+
 ## 4. Intentional deviations from the original sketch
 
 These are not treated as regressions. They reflect implementation experience and should normally be documented rather than mechanically rewritten to match the earlier diagram.
@@ -191,14 +204,14 @@ Cancellation alone did not justify adding abstraction for symmetry. Formalize a 
 
 ## 5. Current architecture debt and next priorities
 
-The resource pipeline's core lifecycle is closed for image thumbnails, on-demand multimedia metadata now covers several common audio/video formats, desktop and touch Canvas input share a semantic boundary, shared media selection is concrete, the semantic theme boundary is established, deterministic layout/query benchmarking exists, and the production filesystem scan, active-media detail, and image-thumbnail generation/cache-reuse paths now have repeatable real-corpus benchmark entry points. The next work should deepen media browsing and engineering validation rather than add abstraction solely for completeness.
+The resource pipeline's core lifecycle is closed for image thumbnails; multimedia metadata covers several common audio/video formats; desktop and touch Canvas input share a semantic boundary; shared selection is concrete; runtime diagnostics make the major representation lifetimes observable; browser main-flow E2E is merge-gated; and Linux/Windows integrated desktop compilation is validated. The project is now primarily closing release/acceptance gaps rather than filling foundational architecture gaps.
 
-1. **Poster/cover representations and broader multimedia coverage.** Generate low-cost video poster/audio cover representations through the existing resource lifecycle when a lightweight implementation is justified, and continue expanding metadata coverage without moving full decoding into scan-time work. Do not introduce a heavyweight video decoder merely to satisfy the old architecture sketch.
-2. **Runtime themes/effects only after a concrete UX need.** The semantic override boundary now exists. Finish isolated remaining presentation literals opportunistically, but do not build a theme-pack/plugin system before there is a real product requirement.
-3. **Benchmark baselines, telemetry and E2E.** Production scanning/header-metadata, active-media detail parsing, and thumbnail miss/generation versus existing-cache reuse now have local release-mode benchmark entry points. Add representative corpus/report baselines; cache eviction/maintenance measurement remains a separate optional follow-up if it becomes useful. Explicit memory/GPU/cache-hit telemetry and end-to-end interaction tests are still missing.
-4. **Broader mobile interaction parity.** Free Canvas touch navigation is implemented, but preview gestures/controls, mobile layout decisions and source-picking UX still need explicit platform work rather than implicit desktop reuse.
-5. **Selection commands only when justified.** Shared selection exists; bulk actions, export/delete workflows or selection-dependent panels should be added only when a concrete browsing workflow requires them rather than invented for completeness.
-6. **Mobile source/resource adapters.** Keep current ports platform-neutral; implement Android/iOS source/resource adapters and mobile resource budgets after desktop behavior is mature.
+1. **Windows release-candidate packaging and release workflow.** Move beyond `--no-bundle` smoke builds by producing inspectable Windows bundle artifacts on an explicit release-candidate workflow. Keep unsigned CI packages distinct from signed production distribution, and do not invent signing infrastructure before keys/policy exist.
+2. **Native desktop acceptance.** Validate source picking, recursive traversal/permissions, Tauri Channel/command behavior, `waterfall-media` delivery including Range/HEAD playback, packaged startup, and long-session lifecycle convergence. Automate where practical; use an explicit acceptance checklist where GUI automation would be disproportionate.
+3. **Representative performance/telemetry baselines.** The benchmark tools and runtime telemetry exist; what remains is a controlled representative corpus/report baseline, process-memory observations where useful, and long-session convergence evidence. True GPU/VRAM measurement remains optional diagnostic debt rather than a Desktop 1.0 blocker unless a real issue demands it.
+4. **Poster/cover representations and broader multimedia coverage when justified.** Generate low-cost audio cover/video poster representations through the existing lifecycle only when an implementation fits the current dependency budget. Do not introduce a heavyweight video decoder merely to satisfy the old architecture sketch.
+5. **Product/release polish.** Finalize product/window metadata, versioning, installer/release notes and acceptance documentation. Runtime theme packs, bulk file-management actions and broader mobile UI are not prerequisites for the current desktop browser.
+6. **Broader mobile interaction and platform adapters later.** Free Canvas touch navigation is implemented, but preview gestures/controls, source/resource adapters, mobile budgets and layout decisions require explicit platform work after desktop behavior is mature.
 
 ## 6. Performance contracts already established
 
@@ -223,6 +236,7 @@ The repository embodies several performance rules from the architecture baseline
 - stale session and stale async representation results are ignored/released;
 - selection chrome is bounded by the already bounded visible Flow/Canvas item sets and does not expand representation work;
 - touch gesture translation performs only constant-size contact bookkeeping and does not change scene/query complexity;
+- runtime telemetry is read on demand from existing bounded registries/pools and does not add continuous hot-path polling;
 - deterministic 10k/50k layout and visibility-query benchmarks provide reproducible before/after evidence without turning noisy hosted-runner milliseconds into false precision;
 - the production filesystem scanner, active-media detail dispatch and `ImageThumbnailer` miss/generation versus existing-file reuse paths have repeatable release-mode real-corpus benchmarks, but their timings remain local comparative evidence rather than machine-independent CI thresholds.
 
@@ -232,10 +246,12 @@ These are part of the architecture contract and should be protected by tests whe
 
 Pull-request CI classifies changed paths and runs only the relevant jobs. Depending on the change set this includes:
 
-- frontend Vitest + TypeScript/Vite build;
+- frontend Vitest scoped to `tests/` plus TypeScript/Vite build;
+- deterministic Chromium Playwright main-flow E2E for frontend-affecting changes;
 - independent Rust core/infrastructure fmt, Clippy and tests;
 - Tauri lockfile verification, fmt, Clippy and tests;
-- integrated desktop `tauri build --no-bundle --ci` smoke build.
+- integrated Linux desktop `tauri build --no-bundle --ci` smoke build;
+- integrated Windows/MSVC desktop `tauri build --no-bundle --ci` smoke build.
 
 The repository has extensive unit/contract coverage for scanning, metadata/cache behavior, query projection, Masonry/Justified layout, viewport virtualization, camera/spatial behavior, Canvas LOD/controller behavior, resource scheduling/leases/cancellation, renderer texture lifetime, workspace sharing, media activation/navigation, on-demand multimedia detail parsing, stale-safe preview detail loading, shared selection lifecycle and semantic input mapping.
 
@@ -243,11 +259,15 @@ FLAC parser tests cover STREAMINFO duration/codec, Vorbis Comment title/artist, 
 
 A deterministic in-memory benchmark harness covers the major layout/query hot paths. `pnpm bench` runs streamed 10k construction/index benchmarks and prepared 50k visibility-query benchmarks, while normal frontend build type-checks the benchmark source. Release-mode `waterfall-infra` examples run the production filesystem scanner, production `read_media_detail` dispatcher and production `ImageThumbnailer` against caller-supplied corpora, reporting repeated scan/header-metadata measurements, overall/per-format active-detail timings and parser result counts, and isolated thumbnail generation versus existing-file reuse timings. Large-dataset contract tests remain the merge-gating performance assertions; machine-dependent real-corpus latency remains comparative evidence rather than a CI threshold.
 
+Runtime telemetry now covers thumbnail generated/reused registrations and maintenance state, thumbnail request cancellation convergence, source/derived media-resource registrations, and Canvas texture lease/ref/unloading convergence. Browser E2E covers the deterministic main viewer workflow over the real production frontend runtime graph. Linux and Windows smoke builds prove integrated desktop compilation on their respective targets.
+
 Still missing as formal engineering capabilities:
 
-- representative benchmark corpus/report baselines; cache eviction/maintenance measurements may be added separately if they become decision-useful;
-- Playwright/Tauri end-to-end interaction tests;
-- explicit memory/GPU/cache-hit telemetry baselines.
+- representative benchmark corpus/report acceptance baselines and long-session convergence reports;
+- native Tauri/WebView interaction validation for real picker/filesystem/IPC/custom-protocol behavior;
+- bundled installer/package artifact validation and installed-app startup acceptance;
+- process-memory telemetry and, only if decision-useful, true GPU/VRAM allocation diagnostics;
+- end-user diagnostic UX or continuous disk-usage accounting between maintenance passes.
 
 ## 8. Architecture rule for future changes
 
