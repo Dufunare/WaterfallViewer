@@ -3,7 +3,7 @@
 > Status: Living implementation baseline
 > Architecture reference: [`ARCHITECTURE.md`](ARCHITECTURE.md) v0.3
 > Baseline date: 2026-09-13
-> Baseline commit: `e03d13e` (`feat(resources): add representation lease lifecycle`)
+> Baseline commit: `f67b1ac` (`feat(cache): bound thumbnail disk cache`)
 
 This document records what the repository actually implements today. `ARCHITECTURE.md` remains the design rationale and long-term direction; when proven implementation choices differ from the original sketch, this document is the source of truth for current behavior until the architecture document is revised.
 
@@ -44,7 +44,7 @@ The project is therefore best described as a **working desktop media-browsing co
 | --- | --- | --- |
 | A. Core Foundation | Complete | Independent `waterfall-core` / `waterfall-infra`, media/source/scan contracts, recursive scanner and tests exist. |
 | B. Streaming Image Browser | Complete | Tauri Channel streaming, session replacement/cancellation, incremental Masonry/Justified layout, viewport virtualization and DOM browsing are implemented. |
-| C. Resource Pipeline | Mostly complete | Thumbnail generation, opaque resource protocol, priority/deduplicating frontend scheduler, persistent visual metadata cache and explicit representation leases exist. Bounded thumbnail disk eviction and running-generation cancellation remain. |
+| C. Resource Pipeline | Mostly complete | Thumbnail generation, opaque resource protocol, priority/deduplicating frontend scheduler, persistent visual metadata cache, explicit representation leases and bounded thumbnail disk eviction exist. Running-generation cancellation remains. |
 | D. Free Canvas | Core complete | World-space scene, camera, spatial index, LOD policy, bounded viewport snapshots and PixiJS renderer are implemented and share the same media session/query as Flow. |
 | E. Multimedia | Partial | Animated image, video and audio remain visible in browsing; explicit preview/playback exists; video dimensions have a container metadata fast path. Rich video/audio details, posters and covers remain. |
 | F. Theme & Runtime Customization | Early | A small CSS-variable base exists, but formal token families, theme packs and optional visual-effect modules are not yet implemented. |
@@ -74,7 +74,7 @@ The frontend consumes opaque resource keys/URIs. Local filesystem paths remain b
 
 As of `e03d13e`, scheduled thumbnail results are consumer leases. Deduplicated subscribers share one backend registration; Flow and Canvas release leases when representations leave their render set, change size/LOD, become stale, or are disposed. The Tauri resource registry reference-counts derived registrations and removes the protocol mapping after the final release.
 
-This lifetime layer deliberately does **not** delete the cached PNG. Disk persistence and live protocol registration are separate lifetimes.
+Disk persistence and live protocol registration remain separate lifetimes. As of `f67b1ac`, the thumbnail disk cache has an explicit high-water/target pruning policy. Active representation registrations protect their backing files from eviction, recently published files receive a short race-safety grace period, and cache-maintenance failure degrades cache behavior rather than media browsing.
 
 ## 4. Intentional deviations from the original sketch
 
@@ -110,14 +110,13 @@ Do not add abstraction only for symmetry. Formalize a separate representation ap
 
 The next work should continue to focus on media browsing and resource behavior rather than adding unrelated product complexity.
 
-1. **Bounded thumbnail disk cache.** Add explicit capacity and eviction policy. Never evict a representation that has an active derived-resource registration. Eviction must be best-effort: cache-maintenance failure must not make media browsing fail.
-2. **Cancellation of running thumbnail work.** Frontend subscribers can already cancel queued/shared interest, but once `spawn_blocking` image generation begins, the decode/resize operation currently runs to completion. Add cooperative cancellation when the representation pipeline is formalized enough to support it safely.
-3. **Multimedia detail representations.** Add richer video/audio metadata and poster/cover generation without making full playback decoding part of scan-time work.
-4. **Selection model.** Selection remains intentionally absent from the current browsing core even though it was present in the original session sketch.
-5. **Input abstraction.** Desktop pointer/keyboard handling still reaches presentation/controller code directly. Introduce semantic `Pan`, `Zoom`, `Activate`, `Back`, `Next`, `Previous`, `Select` mapping before mobile work expands.
-6. **Theme/effect boundary.** Replace remaining hard-coded presentation values with coherent design tokens, then add runtime themes/effects only after functional behavior is stable.
-7. **Formal benchmarks and E2E.** Unit/contract coverage is broad and desktop release smoke builds run in CI, but the benchmark dataset/metrics harness and end-to-end interaction suite described in `ARCHITECTURE.md` are still missing.
-8. **Mobile adapters.** Keep current ports platform-neutral; implement Android/iOS source/input/resource adapters only after desktop resource behavior is mature.
+1. **Cancellation of running thumbnail work.** Frontend subscribers can already cancel queued/shared interest, but once `spawn_blocking` image generation begins, the decode/resize operation currently runs to completion. Add cooperative cancellation when the representation pipeline is formalized enough to support it safely.
+2. **Multimedia detail representations.** Add richer video/audio metadata and poster/cover generation without making full playback decoding part of scan-time work.
+3. **Selection model.** Selection remains intentionally absent from the current browsing core even though it was present in the original session sketch.
+4. **Input abstraction.** Desktop pointer/keyboard handling still reaches presentation/controller code directly. Introduce semantic `Pan`, `Zoom`, `Activate`, `Back`, `Next`, `Previous`, `Select` mapping before mobile work expands.
+5. **Theme/effect boundary.** Replace remaining hard-coded presentation values with coherent design tokens, then add runtime themes/effects only after functional behavior is stable.
+6. **Formal benchmarks and E2E.** Unit/contract coverage is broad and desktop release smoke builds run in CI, but the benchmark dataset/metrics harness and end-to-end interaction suite described in `ARCHITECTURE.md` are still missing.
+7. **Mobile adapters.** Keep current ports platform-neutral; implement Android/iOS source/input/resource adapters only after desktop resource behavior is mature.
 
 ## 6. Performance contracts already established
 
@@ -131,6 +130,7 @@ The repository already embodies several performance rules from the architecture 
 - canvas queries a spatial index and uploads only bounded LOD-selected representations;
 - representation scheduling is concurrency-bounded, priority-aware and deduplicated;
 - visual metadata has bounded in-memory reuse plus a persistent SQLite cache;
+- thumbnail disk persistence has an explicit bounded pruning policy and protects actively registered representations;
 - stale session and stale async representation results are ignored/released.
 
 These are part of the architecture contract and should be protected by tests when changed.
