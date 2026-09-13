@@ -12,6 +12,7 @@ import {
 
 interface PendingCall {
   request: ThumbnailRequest;
+  signal?: AbortSignal;
   resolve: (value: ThumbnailRepresentation) => void;
   reject: (error: unknown) => void;
 }
@@ -21,22 +22,48 @@ class FakeRepresentationPort implements MediaRepresentationPort {
   active = 0;
   maxActive = 0;
 
-  requestThumbnail(request: ThumbnailRequest): Promise<ThumbnailRepresentation> {
+  requestThumbnail(
+    request: ThumbnailRequest,
+    signal?: AbortSignal,
+  ): Promise<ThumbnailRepresentation> {
     this.active += 1;
     this.maxActive = Math.max(this.maxActive, this.active);
 
     return new Promise<ThumbnailRepresentation>((resolve, reject) => {
-      this.calls.push({
+      let settled = false;
+      const finishResolve = (value: ThumbnailRepresentation) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        this.active -= 1;
+        resolve(value);
+      };
+      const finishReject = (error: unknown) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        this.active -= 1;
+        reject(error);
+      };
+      const call: PendingCall = {
         request: { ...request },
-        resolve: (value) => {
-          this.active -= 1;
-          resolve(value);
-        },
-        reject: (error) => {
-          this.active -= 1;
-          reject(error);
-        },
-      });
+        signal,
+        resolve: finishResolve,
+        reject: finishReject,
+      };
+      this.calls.push(call);
+
+      if (signal?.aborted) {
+        finishReject(new Error("backend request cancelled"));
+      } else {
+        signal?.addEventListener(
+          "abort",
+          () => finishReject(new Error("backend request cancelled")),
+          { once: true },
+        );
+      }
     });
   }
 
@@ -258,12 +285,13 @@ describe("RepresentationScheduler", () => {
     controller.abort();
     await cancellation;
     expect(port.calls).toHaveLength(1);
+    expect(port.calls[0].signal?.aborted).toBe(false);
 
     const expected = port.resolve(0);
     await expect(retained).resolves.toMatchObject(expected);
   });
 
-  it("allows a new subscriber to rejoin running orphaned work", async () => {
+  it("aborts orphaned running work and starts a fresh request for later consumers", async () => {
     const port = new FakeRepresentationPort();
     const scheduler = new RepresentationScheduler(port, { maxConcurrent: 1 });
     const controller = new AbortController();
@@ -282,17 +310,20 @@ describe("RepresentationScheduler", () => {
 
     controller.abort();
     await cancellation;
+    expect(port.calls[0].signal?.aborted).toBe(true);
+    await flushMicrotasks();
 
-    const rejoined = scheduler.requestThumbnail({
+    const replacement = scheduler.requestThumbnail({
       resourceKey: "shared",
       maxEdge: 256,
       priority: "visible",
     });
     await flushMicrotasks();
-    expect(port.calls).toHaveLength(1);
+    expect(port.calls).toHaveLength(2);
+    expect(port.calls[1].signal?.aborted).toBe(false);
 
-    const expected = port.resolve(0);
-    await expect(rejoined).resolves.toMatchObject(expected);
+    const expected = port.resolve(1);
+    await expect(replacement).resolves.toMatchObject(expected);
   });
 
   it("propagates failures and frees capacity for queued work", async () => {

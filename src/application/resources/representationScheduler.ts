@@ -44,6 +44,7 @@ interface PendingJob {
   revision: number;
   state: JobState;
   subscribers: Map<number, Subscriber>;
+  backendAbortController: AbortController;
 }
 
 interface QueueEntry {
@@ -96,6 +97,7 @@ export class RepresentationScheduler {
         revision: 0,
         state: "queued",
         subscribers: new Map(),
+        backendAbortController: new AbortController(),
       };
       this.jobs.set(key, job);
       this.pushQueueEntry(job);
@@ -152,8 +154,12 @@ export class RepresentationScheduler {
     job.subscribers.delete(subscriberId);
     subscriber.reject(new RepresentationRequestCancelledError());
 
-    if (job.subscribers.size === 0 && job.state === "queued") {
-      job.revision += 1;
+    if (job.subscribers.size === 0) {
+      if (job.state === "queued") {
+        job.revision += 1;
+      } else {
+        job.backendAbortController.abort();
+      }
       if (this.jobs.get(job.key) === job) {
         this.jobs.delete(job.key);
       }
@@ -178,7 +184,7 @@ export class RepresentationScheduler {
   private async run(job: PendingJob): Promise<void> {
     try {
       const representation = await Promise.resolve().then(() =>
-        this.port.requestThumbnail(job.request),
+        this.port.requestThumbnail(job.request, job.backendAbortController.signal),
       );
       const subscribers = this.takeSubscribers(job);
       if (subscribers.length === 0) {

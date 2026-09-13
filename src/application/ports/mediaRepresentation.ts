@@ -10,7 +10,17 @@ export interface ThumbnailRepresentation {
 }
 
 export interface MediaRepresentationPort {
-  requestThumbnail(request: ThumbnailRequest): Promise<ThumbnailRepresentation>;
+  /**
+   * Request a derived thumbnail representation.
+   *
+   * `signal` represents backend work interest rather than one UI consumer. A
+   * scheduler may share one backend request across multiple consumers and only
+   * abort it after the final consumer leaves.
+   */
+  requestThumbnail(
+    request: ThumbnailRequest,
+    signal?: AbortSignal,
+  ): Promise<ThumbnailRepresentation>;
 
   /**
    * Release one backend registration for a derived representation.

@@ -12,4 +12,6 @@ pub use metadata::{
     VisualMetadataCacheKey, VisualMetadataCacheLookup, DEFAULT_VISUAL_METADATA_CACHE_ENTRIES,
     VISUAL_METADATA_PARSER_VERSION,
 };
-pub use thumbnail::{ImageThumbnailer, ThumbnailError, ThumbnailInfo, ThumbnailSpec};
+pub use thumbnail::{
+    ImageThumbnailer, ThumbnailCancellationToken, ThumbnailError, ThumbnailInfo, ThumbnailSpec,
+};
