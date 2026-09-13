@@ -1,6 +1,6 @@
 # WaterfallViewer Benchmarks
 
-This directory contains reproducible performance benchmarks for layout/query hot paths plus real-corpus Rust benchmark entry points for filesystem scanning and active-media detail parsing.
+This directory contains reproducible performance benchmarks for layout/query hot paths plus real-corpus Rust benchmark entry points for filesystem scanning, active-media detail parsing and thumbnail generation/cache reuse.
 
 ## Synthetic in-memory benchmarks
 
@@ -44,11 +44,28 @@ Files are grouped by extension before each measured pass. The command reports ov
 
 This benchmark intentionally includes the real production dispatch path rather than calling individual format parsers directly. A corpus may therefore contain formats that WaterfallViewer classifies as audio/video but for which rich detail support is partial or absent; those appear as `unsupported` or `errors` instead of being silently excluded.
 
+## Thumbnail pipeline and cache-reuse benchmark
+
+A third Rust example measures the production `ImageThumbnailer` over recognized image/animated-image files:
+
+```bash
+cargo run --release -p waterfall-infra --example thumbnail_bench -- <media-root> --runs 5 --warmups 1 --max-edge 256
+```
+
+Each measured run uses a fresh temporary cache directory. Corpus discovery and cache cleanup happen outside the timed regions. The benchmark then performs two explicit phases per extension group:
+
+- **miss/generation:** the destination does not exist, so the production path decodes the source, resizes it, encodes PNG, and publishes it with the same atomic-write helper used by the app;
+- **hit/reuse:** the same destination already exists, so the production path reuses the PNG and reads its dimensions without decoding the source again.
+
+The command reports per-run and per-format miss/hit timings, generated/reused counts, unsupported/error counts, miss/hit throughput, and generated cache size. Measured runs are checked for stable result counts so changes to source readability or codec coverage are visible.
+
+This benchmark deliberately exercises `ImageThumbnailer` directly instead of exporting Tauri's private resource-registration or cache-key helpers just for measurement. It therefore measures the expensive production thumbnail pipeline and its existing-file reuse path without coupling `waterfall-infra` to desktop-only resource lifecycle policy. Cache eviction/lease maintenance remains a separate concern.
+
 ## Corpus and comparison guidance
 
 The real-corpus benchmarks intentionally do **not** try to defeat or normalize operating-system/filesystem caches. Record whether a result represents a cold-ish first pass or warmed repeated passes, and compare revisions under the same cache/power/thermal conditions. They are not CI latency gates because real filesystem performance is machine- and corpus-dependent.
 
-For useful corpus results, prefer a directory with a realistic mixture of image, animated image, video and audio files, nested directories, varied file sizes, and enough items to expose traversal and metadata overhead. For detail-parser comparisons, include representative MP4/M4A/WAV/MP3/FLAC/Ogg/Opus files plus other classified audio/video formats to make unsupported coverage visible. Do not commit private or copyrighted benchmark media to the repository; keep representative `bench-data` external or locally generated.
+For useful corpus results, prefer a directory with a realistic mixture of image, animated image, video and audio files, nested directories, varied file sizes, and enough items to expose traversal and metadata overhead. For detail-parser comparisons, include representative MP4/M4A/WAV/MP3/FLAC/Ogg/Opus files plus other classified audio/video formats to make unsupported coverage visible. For thumbnail comparisons, include representative JPEG/PNG/GIF/WebP/BMP/TIFF sources at varied resolutions and file sizes; classified formats unsupported by the current thumbnail decoder remain visible as unsupported results instead of being silently dropped. Do not commit private or copyrighted benchmark media to the repository; keep representative `bench-data` external or locally generated.
 
 For useful before/after measurements:
 
@@ -65,4 +82,4 @@ GitHub-hosted shared runners are intentionally **not** used as a latency merge g
 
 ## Remaining benchmark work
 
-The repository now has deterministic in-memory layout/query coverage, a repeatable production filesystem-scan benchmark and a production active-media detail-parser benchmark. Further benchmark work should focus on thumbnail decode/resize/encode and disk-cache hit/miss behavior, representative corpus/report baselines, plus explicit memory/GPU/cache telemetry. These should remain locally reproducible evidence unless a future runner provides sufficiently stable hardware for meaningful thresholds.
+The repository now has deterministic in-memory layout/query coverage plus repeatable production-path benchmarks for filesystem scanning, active-media detail parsing, and thumbnail miss/generation versus existing-cache reuse. Further benchmark work should focus on representative corpus/report baselines, cache eviction/maintenance behavior where justified, plus explicit memory/GPU/cache telemetry and end-to-end interaction measurements. These should remain locally reproducible evidence unless a future runner provides sufficiently stable hardware for meaningful thresholds.
