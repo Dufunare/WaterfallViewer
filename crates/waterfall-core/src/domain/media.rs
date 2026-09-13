@@ -57,12 +57,14 @@ pub enum MediaDetail {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct VideoDetail {
     pub duration_ms: Option<u64>,
     pub codec: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct AudioDetail {
     pub duration_ms: Option<u64>,
     pub title: Option<String>,
