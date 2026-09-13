@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import {
   computed,
-  inject,
   markRaw,
   onBeforeUnmount,
   onMounted,
@@ -20,7 +19,7 @@ import {
 } from "../../platform/input/desktopCanvasInput";
 import type { ViewerInputAction } from "../../platform/input/actions";
 import { PixiCanvasRenderer } from "../../renderers/pixi/pixiCanvasRenderer";
-import { mediaSelectionKey } from "../selectionContext";
+import { useMediaSelection } from "../selectionContext";
 
 const props = defineProps<{
   createBrowser: () => CanvasBrowserController;
@@ -29,11 +28,7 @@ const emit = defineEmits<{
   activate: [mediaId: string];
 }>();
 
-const selection = inject(mediaSelectionKey);
-if (selection === undefined) {
-  throw new Error("CanvasViewport requires the shared media selection context");
-}
-
+const selection = useMediaSelection();
 const host = ref<HTMLElement | null>(null);
 const browser = markRaw(props.createBrowser());
 const renderer = markRaw(new PixiCanvasRenderer());
