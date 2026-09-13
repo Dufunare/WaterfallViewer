@@ -3,7 +3,7 @@
 > Status: Living implementation baseline
 > Architecture reference: [`ARCHITECTURE.md`](ARCHITECTURE.md) v0.3
 > Baseline date: 2026-09-13
-> Baseline commit: `db8a4a6` (`feat(bench): add media detail parser benchmark`)
+> Baseline commit: `e64dbda` (`feat(bench): add thumbnail pipeline benchmark`)
 
 This document records what the repository actually implements today. `ARCHITECTURE.md` remains the design rationale and long-term direction; when proven implementation choices differ from the original sketch, this document is the source of truth for current behavior until the architecture document is revised.
 
@@ -65,10 +65,11 @@ Performance validation
   -> prepared 50k Flow / Canvas visibility-query benchmarks
   -> production real-filesystem scan/header-metadata benchmark entry point
   -> production active-media detail parser benchmark with per-format statistics
+  -> production thumbnail generation/cache-reuse benchmark with per-format miss/hit statistics
   -> large-dataset bounded-work contract tests remain the hard CI gate
 ```
 
-The project is therefore best described as a **working desktop media-browsing core with validated Flow and Free Canvas architectures, an emerging cross-input boundary, a concrete semantic theme boundary, progressively richer on-demand multimedia metadata, and repeatable performance evidence across in-memory, filesystem-scan and active-detail paths**, not as a foundation-only repository.
+The project is therefore best described as a **working desktop media-browsing core with validated Flow and Free Canvas architectures, an emerging cross-input boundary, a concrete semantic theme boundary, progressively richer on-demand multimedia metadata, and repeatable performance evidence across in-memory, filesystem-scan, active-detail and thumbnail-generation/cache-reuse paths**, not as a foundation-only repository.
 
 ## 2. Phase status against `ARCHITECTURE.md`
 
@@ -142,7 +143,9 @@ As of `f031bb3`, a release-mode Rust example also benchmarks the production `Loc
 
 As of `db8a4a6`, a second release-mode Rust example benchmarks the production `read_media_detail` dispatch path over real audio/video candidates. Corpus discovery happens outside the timed region; measured files are grouped by extension and each run reports detailed/unsupported/error counts, aggregate throughput and per-format medians. This deliberately includes the same dispatch/fallback behavior used by active preview metadata rather than timing format parsers in isolation.
 
-Synthetic, scanner and detail-parser latency are intentionally **not** absolute GitHub-hosted-runner merge gates. Shared-runner timing is too noisy, while real-corpus measurements additionally depend on storage, file mix and OS cache state. Before/after measurements should be compared on the same machine under comparable power, thermal and cache conditions, with multiple runs and medians. `tests/largeDatasetContracts.test.ts` remains the CI enforcement layer for bounded frontend work such as visible/render-set sizes and representation-request counts.
+As of `e64dbda`, a third release-mode Rust example benchmarks the production `ImageThumbnailer` over real image and animated-image candidates. Corpus discovery and benchmark-cache cleanup happen outside the timed regions. Each measured run uses an isolated temporary cache: the miss phase exercises source decode, resize, PNG encode and atomic publication, while the immediate hit phase reuses the generated PNG and reads its dimensions without decoding the source again. Results include per-format and aggregate median timings, throughput, unsupported/error counts and generated cache size. The benchmark deliberately avoids exporting Tauri-private cache-key, resource-registration or eviction policy solely for measurement, so it validates the expensive thumbnail pipeline and existing-file reuse path rather than claiming to measure the complete desktop cache manager.
+
+Synthetic, scanner, detail-parser and thumbnail-pipeline latency are intentionally **not** absolute GitHub-hosted-runner merge gates. Shared-runner timing is too noisy, while real-corpus measurements additionally depend on storage, file mix and OS cache state. The thumbnail benchmark controls application-level destination state with a fresh temporary cache for each measured run, but it intentionally does not normalize OS/filesystem caches. Before/after measurements should be compared on the same machine under comparable power, thermal and cache conditions, with multiple runs and medians. `tests/largeDatasetContracts.test.ts` remains the CI enforcement layer for bounded frontend work such as visible/render-set sizes and representation-request counts.
 
 ### 3.9 Selection is shared application state, not renderer state
 
@@ -188,11 +191,11 @@ Cancellation alone did not justify adding abstraction for symmetry. Formalize a 
 
 ## 5. Current architecture debt and next priorities
 
-The resource pipeline's core lifecycle is closed for image thumbnails, on-demand multimedia metadata now covers several common audio/video formats, desktop and touch Canvas input share a semantic boundary, shared media selection is concrete, the semantic theme boundary is established, deterministic layout/query benchmarking exists, and the production filesystem scan plus active-media detail paths now have repeatable real-corpus benchmark entry points. The next work should deepen media browsing and engineering validation rather than add abstraction solely for completeness.
+The resource pipeline's core lifecycle is closed for image thumbnails, on-demand multimedia metadata now covers several common audio/video formats, desktop and touch Canvas input share a semantic boundary, shared media selection is concrete, the semantic theme boundary is established, deterministic layout/query benchmarking exists, and the production filesystem scan, active-media detail, and image-thumbnail generation/cache-reuse paths now have repeatable real-corpus benchmark entry points. The next work should deepen media browsing and engineering validation rather than add abstraction solely for completeness.
 
 1. **Poster/cover representations and broader multimedia coverage.** Generate low-cost video poster/audio cover representations through the existing resource lifecycle when a lightweight implementation is justified, and continue expanding metadata coverage without moving full decoding into scan-time work. Do not introduce a heavyweight video decoder merely to satisfy the old architecture sketch.
 2. **Runtime themes/effects only after a concrete UX need.** The semantic override boundary now exists. Finish isolated remaining presentation literals opportunistically, but do not build a theme-pack/plugin system before there is a real product requirement.
-3. **Thumbnail/cache benchmarks, telemetry and E2E.** Production scanning/header-metadata and active-media detail parsing now have local release-mode benchmark entry points. Add representative corpus/report baselines plus focused thumbnail decode/resize/encode and disk-cache hit/miss measurements; explicit memory/GPU/cache-hit telemetry and end-to-end interaction tests are still missing.
+3. **Benchmark baselines, telemetry and E2E.** Production scanning/header-metadata, active-media detail parsing, and thumbnail miss/generation versus existing-cache reuse now have local release-mode benchmark entry points. Add representative corpus/report baselines; cache eviction/maintenance measurement remains a separate optional follow-up if it becomes useful. Explicit memory/GPU/cache-hit telemetry and end-to-end interaction tests are still missing.
 4. **Broader mobile interaction parity.** Free Canvas touch navigation is implemented, but preview gestures/controls, mobile layout decisions and source-picking UX still need explicit platform work rather than implicit desktop reuse.
 5. **Selection commands only when justified.** Shared selection exists; bulk actions, export/delete workflows or selection-dependent panels should be added only when a concrete browsing workflow requires them rather than invented for completeness.
 6. **Mobile source/resource adapters.** Keep current ports platform-neutral; implement Android/iOS source/resource adapters and mobile resource budgets after desktop behavior is mature.
@@ -221,7 +224,7 @@ The repository embodies several performance rules from the architecture baseline
 - selection chrome is bounded by the already bounded visible Flow/Canvas item sets and does not expand representation work;
 - touch gesture translation performs only constant-size contact bookkeeping and does not change scene/query complexity;
 - deterministic 10k/50k layout and visibility-query benchmarks provide reproducible before/after evidence without turning noisy hosted-runner milliseconds into false precision;
-- the production filesystem scanner and active-media detail dispatch have repeatable release-mode real-corpus benchmarks, but their timings remain local comparative evidence rather than machine-independent CI thresholds.
+- the production filesystem scanner, active-media detail dispatch and `ImageThumbnailer` miss/generation versus existing-file reuse paths have repeatable release-mode real-corpus benchmarks, but their timings remain local comparative evidence rather than machine-independent CI thresholds.
 
 These are part of the architecture contract and should be protected by tests when changed.
 
@@ -238,11 +241,11 @@ The repository has extensive unit/contract coverage for scanning, metadata/cache
 
 FLAC parser tests cover STREAMINFO duration/codec, Vorbis Comment title/artist, non-FLAC input and malformed/truncated metadata. ISO-BMFF audio parser tests cover M4A-style duration/audio codec extraction, UTF-8 and UTF-16BE iTunes-style title/artist tags, ignored non-text tag payloads, rejection of video tracks as audio codec sources and non-ISO input. Ogg tests cover Vorbis duration/comments, Opus pre-skip duration and OpusTags, non-Ogg input and invalid pre-skip/granule combinations. Selection tests cover replace/toggle behavior, primary selection, source/session invalidation, preservation across query projection changes and rejection of missing media. Desktop input tests cover click-to-select semantics and ensure drag/middle-button gestures do not accidentally select. Touch input tests cover tap selection, single-contact pan, two-contact midpoint pan/pinch, pinch-to-single-contact continuation, cancellation and contact-count bounds.
 
-A deterministic in-memory benchmark harness covers the major layout/query hot paths. `pnpm bench` runs streamed 10k construction/index benchmarks and prepared 50k visibility-query benchmarks, while normal frontend build type-checks the benchmark source. Release-mode `waterfall-infra` examples run the production filesystem scanner and production `read_media_detail` dispatcher against caller-supplied corpora, reporting repeated scan/header-metadata measurements plus overall/per-format active-detail timings and parser result counts. Large-dataset contract tests remain the merge-gating performance assertions; machine-dependent real-corpus latency remains comparative evidence rather than a CI threshold.
+A deterministic in-memory benchmark harness covers the major layout/query hot paths. `pnpm bench` runs streamed 10k construction/index benchmarks and prepared 50k visibility-query benchmarks, while normal frontend build type-checks the benchmark source. Release-mode `waterfall-infra` examples run the production filesystem scanner, production `read_media_detail` dispatcher and production `ImageThumbnailer` against caller-supplied corpora, reporting repeated scan/header-metadata measurements, overall/per-format active-detail timings and parser result counts, and isolated thumbnail generation versus existing-file reuse timings. Large-dataset contract tests remain the merge-gating performance assertions; machine-dependent real-corpus latency remains comparative evidence rather than a CI threshold.
 
 Still missing as formal engineering capabilities:
 
-- representative benchmark corpus/report baselines and focused measurements for thumbnail decode/resize/encode and disk-cache hit/miss behavior;
+- representative benchmark corpus/report baselines; cache eviction/maintenance measurements may be added separately if they become decision-useful;
 - Playwright/Tauri end-to-end interaction tests;
 - explicit memory/GPU/cache-hit telemetry baselines.
 
