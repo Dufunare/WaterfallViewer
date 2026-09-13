@@ -1,7 +1,6 @@
 use std::{
     collections::HashSet,
-    fs,
-    io,
+    fs, io,
     path::{Path, PathBuf},
     time::{Duration, SystemTime},
 };
