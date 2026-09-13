@@ -11,6 +11,7 @@ import {
   RepresentationRequestCancelledError,
   RepresentationScheduler,
   type RepresentationPriority,
+  type ThumbnailRepresentationLease,
 } from "../resources/representationScheduler";
 import type { LayoutNode } from "../../layout/types";
 import type {
@@ -121,6 +122,7 @@ type ThumbnailState =
       sessionId: string;
       requestKey: string;
       uri: string;
+      lease: ThumbnailRepresentationLease;
     }
   | {
       status: "error";
@@ -307,9 +309,7 @@ export class MediaBrowserController {
 
     for (const [mediaId, state] of this.#thumbnailStates) {
       if (state.sessionId !== session.id || !renderIds.has(mediaId)) {
-        if (state.status === "loading") {
-          state.abortController.abort();
-        }
+        this.#releaseThumbnailState(state);
         this.#thumbnailStates.delete(mediaId);
       }
     }
@@ -371,8 +371,8 @@ export class MediaBrowserController {
     const requestKey = JSON.stringify([media.resourceKey, maxEdge]);
     const existing = this.#thumbnailStates.get(media.id);
 
-    if (existing !== undefined && existing.sessionId === sessionId) {
-      if (existing.requestKey === requestKey) {
+    if (existing !== undefined) {
+      if (existing.sessionId === sessionId && existing.requestKey === requestKey) {
         if (
           existing.status !== "loading" ||
           priorityRank(priority) <= priorityRank(existing.priority)
@@ -380,8 +380,8 @@ export class MediaBrowserController {
           return;
         }
         existing.abortController.abort();
-      } else if (existing.status === "loading") {
-        existing.abortController.abort();
+      } else {
+        this.#releaseThumbnailState(existing);
       }
     }
 
@@ -395,7 +395,7 @@ export class MediaBrowserController {
     };
     this.#thumbnailStates.set(media.id, state);
 
-    let request: Promise<{ resourceKey: string; width: number; height: number }>;
+    let request: Promise<ThumbnailRepresentationLease>;
     try {
       request = this.#representationScheduler.requestThumbnail({
         resourceKey: media.resourceKey,
@@ -416,6 +416,7 @@ export class MediaBrowserController {
     void request.then(
       (representation) => {
         if (this.#thumbnailStates.get(media.id) !== state) {
+          representation.release();
           return;
         }
         try {
@@ -425,8 +426,10 @@ export class MediaBrowserController {
             sessionId,
             requestKey,
             uri,
+            lease: representation,
           });
         } catch (error) {
+          representation.release();
           this.#thumbnailStates.set(media.id, {
             status: "error",
             sessionId,
@@ -490,11 +493,17 @@ export class MediaBrowserController {
     };
   }
 
+  #releaseThumbnailState(state: ThumbnailState): void {
+    if (state.status === "loading") {
+      state.abortController.abort();
+    } else if (state.status === "ready") {
+      state.lease.release();
+    }
+  }
+
   #cancelAllThumbnailRequests(): void {
     for (const state of this.#thumbnailStates.values()) {
-      if (state.status === "loading") {
-        state.abortController.abort();
-      }
+      this.#releaseThumbnailState(state);
     }
     this.#thumbnailStates.clear();
   }
@@ -549,7 +558,7 @@ class MasonryBrowserFlow implements BrowserFlow {
 
   configure(viewport: BrowserViewport): void {
     this.#model.configure({
-      viewport: { width: viewport.width, height: viewport.height },
+      viewport: { width: viewport.width, height: 0 },
       columnCount: calculateColumnCount(viewport.width, this.#options),
       gap: this.#options.gap,
     });
@@ -609,7 +618,7 @@ class JustifiedBrowserFlow implements BrowserFlow {
 
   configure(viewport: BrowserViewport): void {
     this.#model.configure({
-      viewport: { width: viewport.width, height: viewport.height },
+      viewport: { width: viewport.width, height: 0 },
       targetRowHeight: this.#options.justifiedTargetRowHeight,
       gap: this.#options.gap,
     });
