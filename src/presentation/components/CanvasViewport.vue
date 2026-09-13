@@ -18,6 +18,7 @@ import {
   type InputBounds,
 } from "../../platform/input/desktopCanvasInput";
 import type { ViewerInputAction } from "../../platform/input/actions";
+import { TouchCanvasInputAdapter } from "../../platform/input/touchCanvasInput";
 import { PixiCanvasRenderer } from "../../renderers/pixi/pixiCanvasRenderer";
 import { useMediaSelection } from "../selectionContext";
 
@@ -32,7 +33,8 @@ const selection = useMediaSelection();
 const host = ref<HTMLElement | null>(null);
 const browser = markRaw(props.createBrowser());
 const renderer = markRaw(new PixiCanvasRenderer());
-const input = markRaw(new DesktopCanvasInputAdapter());
+const desktopInput = markRaw(new DesktopCanvasInputAdapter());
+const touchInput = markRaw(new TouchCanvasInputAdapter());
 const snapshot = shallowRef<CanvasBrowserSnapshot>(browser.snapshot);
 const selectionSnapshot = shallowRef(selection.snapshot);
 const rendererError = ref<string | null>(null);
@@ -88,7 +90,9 @@ function onPointerDown(event: PointerEvent): void {
     return;
   }
 
-  const result = input.beginPointer(event);
+  const result = isTouch(event)
+    ? touchInput.beginPointer(event)
+    : desktopInput.beginPointer(event);
   if (!result.accepted || result.pointerId === null) {
     return;
   }
@@ -97,31 +101,61 @@ function onPointerDown(event: PointerEvent): void {
 }
 
 function onPointerMove(event: PointerEvent): void {
-  dispatchInputAction(input.movePointer(event));
-}
-
-function onPointerUp(event: PointerEvent): void {
-  const bounds = hostBounds();
-  if (bounds !== null) {
-    dispatchInputAction(input.selectionOnPointerUp(event, bounds));
-  }
-  finishPointer(event.pointerId);
-}
-
-function onPointerCancel(event: PointerEvent): void {
-  finishPointer(event.pointerId);
-}
-
-function finishPointer(pointerId: number): void {
-  if (!input.endPointer(pointerId)) {
+  if (!isTouch(event)) {
+    dispatchInputAction(desktopInput.movePointer(event));
     return;
   }
 
+  const bounds = hostBounds();
+  if (bounds === null) {
+    return;
+  }
+  dispatchInputActions(touchInput.movePointer(event, bounds));
+}
+
+function onPointerUp(event: PointerEvent): void {
+  if (isTouch(event)) {
+    const bounds = hostBounds();
+    if (bounds !== null) {
+      dispatchInputActions(touchInput.endPointer(event, bounds));
+    } else {
+      touchInput.cancelPointer(event.pointerId);
+    }
+    releasePointerCapture(event.pointerId);
+    dragging.value = touchInput.activePointerCount > 0;
+    return;
+  }
+
+  const bounds = hostBounds();
+  if (bounds !== null) {
+    dispatchInputAction(desktopInput.selectionOnPointerUp(event, bounds));
+  }
+  finishDesktopPointer(event.pointerId);
+}
+
+function onPointerCancel(event: PointerEvent): void {
+  if (isTouch(event)) {
+    touchInput.cancelPointer(event.pointerId);
+    releasePointerCapture(event.pointerId);
+    dragging.value = touchInput.activePointerCount > 0;
+    return;
+  }
+  finishDesktopPointer(event.pointerId);
+}
+
+function finishDesktopPointer(pointerId: number): void {
+  if (!desktopInput.endPointer(pointerId)) {
+    return;
+  }
+  releasePointerCapture(pointerId);
+  dragging.value = false;
+}
+
+function releasePointerCapture(pointerId: number): void {
   const element = host.value;
   if (element?.hasPointerCapture(pointerId)) {
     element.releasePointerCapture(pointerId);
   }
-  dragging.value = false;
 }
 
 function onWheel(event: WheelEvent): void {
@@ -129,7 +163,7 @@ function onWheel(event: WheelEvent): void {
   if (bounds === null) {
     return;
   }
-  dispatchInputAction(input.wheel(event, bounds));
+  dispatchInputAction(desktopInput.wheel(event, bounds));
 }
 
 function onDoubleClick(event: MouseEvent): void {
@@ -137,7 +171,13 @@ function onDoubleClick(event: MouseEvent): void {
   if (bounds === null) {
     return;
   }
-  dispatchInputAction(input.activate(event, bounds));
+  dispatchInputAction(desktopInput.activate(event, bounds));
+}
+
+function dispatchInputActions(actions: readonly ViewerInputAction[]): void {
+  for (const action of actions) {
+    dispatchInputAction(action);
+  }
 }
 
 function dispatchInputAction(action: ViewerInputAction | null): void {
@@ -186,6 +226,10 @@ function hostBounds(): InputBounds | null {
   }
   const rect = element.getBoundingClientRect();
   return { left: rect.left, top: rect.top };
+}
+
+function isTouch(event: PointerEvent): boolean {
+  return event.pointerType === "touch";
 }
 
 function fitContent(): void {
@@ -248,7 +292,8 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   disposed = true;
-  input.reset();
+  desktopInput.reset();
+  touchInput.reset();
   unsubscribe?.();
   unsubscribeSelection?.();
   resizeObserver?.disconnect();
@@ -312,6 +357,7 @@ onBeforeUnmount(() => {
     var(--wf-bg);
   cursor: grab;
   contain: strict;
+  touch-action: none;
   user-select: none;
 }
 
