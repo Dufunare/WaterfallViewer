@@ -207,12 +207,13 @@ fn read_text_data<R: Read + Seek>(reader: &mut R, data: IsoBox) -> io::Result<Op
 }
 
 fn decode_utf16be(data: &[u8]) -> Option<String> {
-    if !data.len().is_multiple_of(2) {
+    let (pairs, remainder) = data.as_chunks::<2>();
+    if !remainder.is_empty() {
         return None;
     }
-    let mut units = Vec::with_capacity(data.len() / 2);
-    for bytes in data.chunks_exact(2) {
-        units.push(u16::from_be_bytes([bytes[0], bytes[1]]));
+    let mut units = Vec::with_capacity(pairs.len());
+    for bytes in pairs {
+        units.push(u16::from_be_bytes(*bytes));
     }
     if units.first() == Some(&0xfeff) {
         units.remove(0);
