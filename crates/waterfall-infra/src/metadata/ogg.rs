@@ -35,7 +35,6 @@ enum OggCodec {
 #[derive(Debug)]
 struct OggPage {
     header_type: u8,
-    granule_position: u64,
     serial: u32,
     lacing: Vec<u8>,
     payload: Vec<u8>,
@@ -78,11 +77,8 @@ fn read_ogg_detail<R: Read + Seek>(
             continue;
         }
 
-        for (index, segment_len) in page.lacing.iter().copied().enumerate() {
-            let segment_start = page.lacing[..index]
-                .iter()
-                .map(|value| usize::from(*value))
-                .sum::<usize>();
+        let mut segment_start = 0usize;
+        for segment_len in page.lacing.iter().copied() {
             let segment_end = segment_start + usize::from(segment_len);
             let Some(segment) = page.payload.get(segment_start..segment_end) else {
                 return Err(io::Error::new(
@@ -90,6 +86,7 @@ fn read_ogg_detail<R: Read + Seek>(
                     "Ogg segment exceeds page payload",
                 ));
             };
+            segment_start = segment_end;
             if packet.len().saturating_add(segment.len()) > MAX_PACKET_BYTES {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -241,10 +238,7 @@ fn read_final_granule<R: Read + Seek>(
     let mut cursor = 0usize;
     let mut last = None;
     while cursor.saturating_add(27) <= tail.len() {
-        let Some(relative) = tail[cursor..]
-            .windows(4)
-            .position(|bytes| bytes == b"OggS")
-        else {
+        let Some(relative) = tail[cursor..].windows(4).position(|bytes| bytes == b"OggS") else {
             break;
         };
         let start = cursor + relative;
@@ -302,7 +296,6 @@ fn read_page<R: Read>(reader: &mut R) -> io::Result<Option<OggPage>> {
 
     Ok(Some(OggPage {
         header_type: header[5],
-        granule_position: u64::from_le_bytes(header[6..14].try_into().expect("granule position")),
         serial: u32::from_le_bytes(header[14..18].try_into().expect("stream serial")),
         lacing,
         payload,
