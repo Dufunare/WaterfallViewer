@@ -44,6 +44,30 @@ jobs:
       - name: Build NSIS release candidate
         run: pnpm tauri build --target x86_64-pc-windows-msvc --bundles nsis --ci
 
+      - name: Smoke launch native desktop executable
+        shell: pwsh
+        run: |
+          $exe = "src-tauri/target/x86_64-pc-windows-msvc/release/waterfallviewer.exe"
+          if (-not (Test-Path $exe)) {
+            throw "Expected native desktop executable at $exe."
+          }
+
+          $process = Start-Process -FilePath $exe -PassThru
+          try {
+            Start-Sleep -Seconds 8
+            if ($process.HasExited) {
+              throw "Native desktop executable exited during startup smoke with code $($process.ExitCode)."
+            }
+
+            "- Native startup smoke: passed; release executable remained alive for 8 seconds on the Windows runner." >> $env:GITHUB_STEP_SUMMARY
+          }
+          finally {
+            if (-not $process.HasExited) {
+              Stop-Process -Id $process.Id -Force
+              $process.WaitForExit()
+            }
+          }
+
       - name: Verify package and write checksum
         shell: pwsh
         run: |
