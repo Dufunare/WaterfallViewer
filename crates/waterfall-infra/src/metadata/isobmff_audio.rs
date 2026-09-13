@@ -443,10 +443,7 @@ mod tests {
 
     #[test]
     fn reads_utf16be_itunes_text() {
-        let title_bytes: Vec<u8> = "瀑布"
-            .encode_utf16()
-            .flat_map(u16::to_be_bytes)
-            .collect();
+        let title_bytes: Vec<u8> = "瀑布".encode_utf16().flat_map(u16::to_be_bytes).collect();
         let title = text_item(ITUNES_TITLE, 2, &title_bytes);
         let ilst = boxed(b"ilst", &title);
         let mut meta_payload = vec![0u8; 4];
