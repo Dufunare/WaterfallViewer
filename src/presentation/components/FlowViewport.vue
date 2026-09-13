@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import {
   computed,
-  inject,
   onBeforeUnmount,
   onMounted,
   ref,
@@ -12,7 +11,7 @@ import type {
   BrowserTile,
   MediaBrowserController,
 } from "../../application/browser/mediaBrowserController";
-import { mediaSelectionKey } from "../selectionContext";
+import { useMediaSelection } from "../selectionContext";
 
 const props = defineProps<{
   browser: MediaBrowserController;
@@ -21,11 +20,7 @@ const emit = defineEmits<{
   activate: [mediaId: string];
 }>();
 
-const selection = inject(mediaSelectionKey);
-if (selection === undefined) {
-  throw new Error("FlowViewport requires the shared media selection context");
-}
-
+const selection = useMediaSelection();
 const viewportElement = ref<HTMLElement | null>(null);
 const snapshot = shallowRef(props.browser.snapshot);
 const selectionSnapshot = shallowRef(selection.snapshot);
