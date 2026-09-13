@@ -8,7 +8,7 @@ WaterfallViewer is a local-first, session-oriented multimedia browser for recurs
 
 The long-term architecture and design rationale are documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-The repository's current, validated implementation baseline and known architecture debt are tracked separately in [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md). When the original architecture sketch and proven implementation choices differ, the implementation-status document records the current behavior and rationale.
+The repository's current, validated implementation baseline and known architecture debt are tracked separately in [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md). Runtime telemetry and viewer/E2E evolution are recorded in [`docs/THUMBNAIL_CACHE_TELEMETRY.md`](docs/THUMBNAIL_CACHE_TELEMETRY.md) and [`docs/VIEWER_RUNTIME_E2E_BASELINE.md`](docs/VIEWER_RUNTIME_E2E_BASELINE.md).
 
 The Rust foundation remains intentionally split from Tauri:
 
@@ -23,17 +23,22 @@ The current desktop baseline includes:
 
 - recursive local-directory scanning with batched Tauri Channel delivery and cancellation;
 - image, animated-image, video and audio discovery;
-- metadata/header fast paths, including video visual dimensions;
+- metadata/header fast paths, including lightweight on-demand video/audio detail parsing;
 - reusable in-memory and persistent SQLite visual-metadata caching;
 - shared media indexing, media-kind filtering and stable deferred sorting;
 - incremental Masonry and Justified flow layouts with viewport virtualization;
 - a Free Canvas with world coordinates, camera, spatial indexing, LOD and a bounded PixiJS renderer;
-- one shared source/session/query across Flow and Canvas;
-- an opaque local-media protocol with range/HEAD support;
+- one shared source/session/query/selection model across Flow and Canvas;
+- an opaque local-media protocol with Range/HEAD support;
 - priority-aware, concurrency-bounded and deduplicated thumbnail scheduling;
-- explicit reference-counted representation leases and release from Flow/Canvas lifecycles;
-- single-item image/video/audio preview/playback with adjacent navigation;
-- selective CI plus an integrated desktop release smoke build.
+- explicit reference-counted representation leases, cooperative cancellation and bounded thumbnail disk eviction;
+- single-item image/video/audio preview/playback with adjacent navigation and supported audio metadata display;
+- semantic desktop input plus touch pan/pinch/tap handling for Free Canvas;
+- semantic theme tokens for the main Flow, Canvas and Preview surfaces;
+- deterministic 10k/50k frontend benchmarks plus real-corpus scan/detail/thumbnail benchmark entry points;
+- read-only runtime telemetry for thumbnail cache/request state, media-resource registrations and Canvas texture leases;
+- deterministic Chromium Playwright coverage for the main browser-facing viewer workflow;
+- selective CI with Linux and Windows integrated Tauri `--no-bundle` smoke builds.
 
 ## Development
 
@@ -60,14 +65,23 @@ cargo test --manifest-path src-tauri/Cargo.toml --locked
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings
 ```
 
-Integrated desktop build:
+Integrated desktop compile smoke:
 
 ```bash
 pnpm tauri build --no-bundle --ci
 ```
 
+The browser E2E suite uses `e2e.html` and a deterministic seeded platform fixture while preserving the production `createViewerRuntime(...)` composition. CI currently installs the pinned Playwright test tool separately from the frozen application dependency graph; see [`docs/VIEWER_RUNTIME_E2E_BASELINE.md`](docs/VIEWER_RUNTIME_E2E_BASELINE.md) for the exact boundary.
+
 ## Current development focus
 
-The project is now at a **working desktop media-browsing core** rather than Core Foundation. Flow and Free Canvas have both validated their main technical paths, and the resource pipeline is largely operational.
+WaterfallViewer is now in **Desktop 1.0 validation and release preparation**, not core-foundation development. The difficult browsing architecture paths—streaming discovery, virtualized Flow, bounded Free Canvas rendering, explicit resource lifetimes, multimedia preview, shared selection/input, telemetry and browser main-flow E2E—are already established.
 
-The next priorities are to close remaining resource-lifecycle gaps, beginning with a bounded thumbnail disk cache, then deepen multimedia metadata/representations and add formal benchmark/E2E coverage. Theme packs, semantic input abstraction and mobile adapters remain later phases rather than prerequisites for the current browsing core.
+The highest-value remaining desktop work is to:
+
+1. produce and validate Windows release-candidate bundle artifacts rather than only `--no-bundle` compile outputs;
+2. validate native desktop behavior that browser E2E cannot prove, especially source picking, real filesystem traversal, Tauri IPC/custom-protocol media delivery and packaged startup;
+3. record representative real-corpus benchmark/telemetry acceptance baselines and long-session resource convergence;
+4. finish product/release polish such as naming/window metadata, versioning, packaging/release workflow and final acceptance documentation.
+
+Poster/cover generation, runtime theme packs, deep GPU/VRAM telemetry and mobile adapters remain valid future work, but they are not prerequisites for proving the current desktop browsing core. In particular, the project should not add a heavyweight video decoder solely to manufacture poster thumbnails for architectural symmetry.
