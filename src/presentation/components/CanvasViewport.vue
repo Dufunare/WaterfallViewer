@@ -353,7 +353,7 @@ onBeforeUnmount(() => {
   min-height: 0;
   overflow: hidden;
   background:
-    radial-gradient(circle at center, rgba(255, 255, 255, 0.025), transparent 46%),
+    radial-gradient(circle at center, var(--wf-surface-subtle), transparent 46%),
     var(--wf-bg);
   cursor: grab;
   contain: strict;
@@ -386,8 +386,8 @@ onBeforeUnmount(() => {
   padding: 5px;
   border: 1px solid var(--wf-border);
   border-radius: 9px;
-  background: rgba(21, 23, 26, 0.84);
-  backdrop-filter: blur(10px);
+  background: var(--wf-hud-surface);
+  backdrop-filter: var(--wf-blur-hud);
 }
 
 .zoom-label {
@@ -423,10 +423,10 @@ onBeforeUnmount(() => {
   max-width: min(560px, calc(100% - 32px));
   transform: translateX(-50%);
   padding: 8px 12px;
-  border: 1px solid rgba(239, 139, 139, 0.28);
+  border: 1px solid var(--wf-danger-border);
   border-radius: 8px;
-  background: rgba(95, 30, 34, 0.9);
-  color: #ffd2d2;
+  background: var(--wf-danger-surface);
+  color: var(--wf-danger-text);
   font-size: 0.76rem;
 }
 </style>
