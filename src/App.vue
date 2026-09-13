@@ -2,6 +2,7 @@
 import type { MediaBrowserController } from "./application/browser/mediaBrowserController";
 import type { CanvasBrowserController } from "./application/canvas/canvasBrowserController";
 import type { MediaQueryController } from "./application/query/mediaQueryController";
+import type { MediaSelectionController } from "./application/selection/mediaSelectionController";
 import type { MediaActivationController } from "./application/viewer/mediaActivationController";
 import type { PreviewMediaDetailController } from "./application/viewer/previewMediaDetailController";
 import type { ViewerWorkspaceController } from "./application/viewer/viewerWorkspaceController";
@@ -11,6 +12,7 @@ import ViewerPage from "./presentation/pages/ViewerPage.vue";
 const props = defineProps<{
   workspace: ViewerWorkspaceController;
   query: MediaQueryController;
+  selection: MediaSelectionController;
   flowBrowser: MediaBrowserController;
   createCanvasBrowser: () => CanvasBrowserController;
   activation: MediaActivationController;
@@ -26,6 +28,7 @@ function activateMedia(mediaId: string): void {
   <ViewerPage
     :workspace="workspace"
     :query="query"
+    :selection="selection"
     :flow-browser="flowBrowser"
     :create-canvas-browser="createCanvasBrowser"
     @activate="activateMedia"
