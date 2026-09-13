@@ -5,6 +5,7 @@ on:
   pull_request:
     paths:
       - .github/workflows/windows-release-candidate.yml
+      - docs/DESKTOP_ACCEPTANCE.md
 
 concurrency:
   group: windows-release-candidate-${{ github.ref }}
@@ -67,6 +68,65 @@ jobs:
               $process.WaitForExit()
             }
           }
+
+      - name: Smoke install, launch and uninstall NSIS package
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe")
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one NSIS installer, found $($installers.Count)."
+          }
+
+          $installer = $installers[0]
+          $installDir = Join-Path $env:RUNNER_TEMP "WaterfallViewer-RC"
+          if (Test-Path $installDir) {
+            Remove-Item -Recurse -Force $installDir
+          }
+
+          # Tauri NSIS supports silent installation with /S. /NS avoids creating
+          # shortcuts on the ephemeral CI runner, and /D keeps the install isolated.
+          # NSIS requires /D to be the final installer argument.
+          $install = Start-Process -FilePath $installer.FullName -ArgumentList @("/S", "/NS", "/D=$installDir") -Wait -PassThru
+          if ($install.ExitCode -ne 0) {
+            throw "NSIS installer exited with code $($install.ExitCode)."
+          }
+
+          $installedExecutables = @(Get-ChildItem $installDir -Recurse -File -Filter "waterfallviewer.exe")
+          if ($installedExecutables.Count -ne 1) {
+            throw "Expected exactly one installed WaterfallViewer executable, found $($installedExecutables.Count)."
+          }
+
+          $installedExe = $installedExecutables[0]
+          $process = Start-Process -FilePath $installedExe.FullName -PassThru
+          try {
+            Start-Sleep -Seconds 8
+            if ($process.HasExited) {
+              throw "Installed application exited during startup smoke with code $($process.ExitCode)."
+            }
+          }
+          finally {
+            if (-not $process.HasExited) {
+              Stop-Process -Id $process.Id -Force
+              $process.WaitForExit()
+            }
+          }
+
+          $uninstallers = @(Get-ChildItem $installDir -Recurse -File -Filter "uninstall.exe")
+          if ($uninstallers.Count -ne 1) {
+            throw "Expected exactly one NSIS uninstaller, found $($uninstallers.Count)."
+          }
+
+          $uninstall = Start-Process -FilePath $uninstallers[0].FullName -ArgumentList "/S" -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0) {
+            throw "NSIS uninstaller exited with code $($uninstall.ExitCode)."
+          }
+
+          Start-Sleep -Seconds 2
+          if (Test-Path $installedExe.FullName) {
+            throw "Installed application binary still exists after silent uninstall: $($installedExe.FullName)"
+          }
+
+          "- Installed-package smoke: passed; NSIS silently installed to an isolated directory, the installed app remained alive for 8 seconds, and silent uninstall removed the app binary." >> $env:GITHUB_STEP_SUMMARY
 
       - name: Verify package and write checksum
         shell: pwsh
