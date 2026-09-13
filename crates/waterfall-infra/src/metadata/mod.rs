@@ -2,6 +2,7 @@ mod cache;
 mod detail;
 mod flac;
 mod header;
+mod isobmff_audio;
 mod media_detail;
 mod sqlite;
 mod video;
