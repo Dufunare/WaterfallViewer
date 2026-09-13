@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const nativeE2ERoot = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(nativeE2ERoot, "..");
-const application = path.join(root, "src-tauri", "target", "release", "waterfallviewer");
+const application = path.join(root, "src-tauri", "target", "debug", "waterfallviewer");
 
 let tauriDriver;
 let shuttingDown = false;
