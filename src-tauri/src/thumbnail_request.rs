@@ -7,6 +7,13 @@ use waterfall_infra::ThumbnailCancellationToken;
 
 const MAX_PENDING_CANCELLATIONS: usize = 256;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ThumbnailRequestTelemetrySnapshot {
+    pub active_requests: u64,
+    pub cancelled_active_requests: u64,
+    pub pending_cancellations: u64,
+}
+
 #[derive(Clone, Default)]
 pub struct ThumbnailRequestRegistry {
     inner: Arc<Mutex<ThumbnailRequestState>>,
@@ -75,6 +82,23 @@ impl ThumbnailRequestRegistry {
         state.active.remove(request_id);
         Ok(())
     }
+
+    pub fn telemetry_snapshot(&self) -> Result<ThumbnailRequestTelemetrySnapshot, String> {
+        let state = self
+            .inner
+            .lock()
+            .map_err(|_| "thumbnail request registry lock poisoned".to_owned())?;
+        let cancelled_active_requests = state
+            .active
+            .values()
+            .filter(|token| token.is_cancelled())
+            .count() as u64;
+        Ok(ThumbnailRequestTelemetrySnapshot {
+            active_requests: state.active.len() as u64,
+            cancelled_active_requests,
+            pending_cancellations: state.pending_cancellations.len() as u64,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -89,7 +113,19 @@ mod tests {
         assert!(!token.is_cancelled());
         assert!(registry.cancel("request-1").unwrap());
         assert!(token.is_cancelled());
+        assert_eq!(
+            registry.telemetry_snapshot().unwrap(),
+            ThumbnailRequestTelemetrySnapshot {
+                active_requests: 1,
+                cancelled_active_requests: 1,
+                pending_cancellations: 0,
+            }
+        );
         registry.finish("request-1").unwrap();
+        assert_eq!(
+            registry.telemetry_snapshot().unwrap(),
+            ThumbnailRequestTelemetrySnapshot::default()
+        );
     }
 
     #[test]
@@ -97,8 +133,16 @@ mod tests {
         let registry = ThumbnailRequestRegistry::default();
 
         assert!(!registry.cancel("request-1").unwrap());
+        assert_eq!(
+            registry.telemetry_snapshot().unwrap().pending_cancellations,
+            1
+        );
         let token = registry.register("request-1").unwrap();
         assert!(token.is_cancelled());
+        let snapshot = registry.telemetry_snapshot().unwrap();
+        assert_eq!(snapshot.active_requests, 1);
+        assert_eq!(snapshot.cancelled_active_requests, 1);
+        assert_eq!(snapshot.pending_cancellations, 0);
         registry.finish("request-1").unwrap();
     }
 
@@ -120,5 +164,10 @@ mod tests {
         let state = registry.inner.lock().unwrap();
         assert_eq!(state.pending_cancellations.len(), MAX_PENDING_CANCELLATIONS);
         assert!(!state.pending_cancellations.contains("request-0"));
+        drop(state);
+        assert_eq!(
+            registry.telemetry_snapshot().unwrap().pending_cancellations,
+            MAX_PENDING_CANCELLATIONS as u64
+        );
     }
 }
