@@ -50,6 +50,29 @@ pub struct VisualMetadata {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum MediaDetail {
+    Video(VideoDetail),
+    Audio(AudioDetail),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoDetail {
+    pub duration_ms: Option<u64>,
+    pub codec: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioDetail {
+    pub duration_ms: Option<u64>,
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub codec: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MediaItem {
     pub id: MediaId,
     pub source_id: SourceId,
