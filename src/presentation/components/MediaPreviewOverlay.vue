@@ -1,17 +1,51 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, shallowRef } from "vue";
+import { computed, onBeforeUnmount, onMounted, shallowRef } from "vue";
 
 import type {
   ActiveMediaSnapshot,
   MediaActivationController,
 } from "../../application/viewer/mediaActivationController";
+import type {
+  PreviewMediaDetailController,
+  PreviewMediaDetailSnapshot,
+} from "../../application/viewer/previewMediaDetailController";
 
 const props = defineProps<{
   activation: MediaActivationController;
+  details: PreviewMediaDetailController;
 }>();
 
 const active = shallowRef<ActiveMediaSnapshot | null>(props.activation.snapshot);
-let unsubscribe: (() => void) | null = null;
+const detailState = shallowRef<PreviewMediaDetailSnapshot>(props.details.snapshot);
+let unsubscribeActivation: (() => void) | null = null;
+let unsubscribeDetails: (() => void) | null = null;
+
+const detail = computed(() => {
+  if (
+    active.value === null ||
+    detailState.value.mediaId !== active.value.mediaId ||
+    detailState.value.status !== "ready"
+  ) {
+    return null;
+  }
+  return detailState.value.detail;
+});
+
+const detailSummary = computed(() => {
+  const current = detail.value;
+  if (current === null) {
+    return null;
+  }
+
+  const parts: string[] = [];
+  if (current.durationMs !== null) {
+    parts.push(formatDuration(current.durationMs));
+  }
+  if (current.codec !== null && current.codec.trim().length > 0) {
+    parts.push(current.codec);
+  }
+  return parts.length === 0 ? null : parts.join(" · ");
+});
 
 function close(): void {
   props.activation.clear();
@@ -66,15 +100,30 @@ function keepsNativeArrowBehavior(target: EventTarget | null): boolean {
   );
 }
 
+function formatDuration(durationMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
 onMounted(() => {
-  unsubscribe = props.activation.subscribe((snapshot) => {
+  unsubscribeActivation = props.activation.subscribe((snapshot) => {
     active.value = snapshot;
+  });
+  unsubscribeDetails = props.details.subscribe((snapshot) => {
+    detailState.value = snapshot;
   });
   window.addEventListener("keydown", onKeyDown);
 });
 
 onBeforeUnmount(() => {
-  unsubscribe?.();
+  unsubscribeActivation?.();
+  unsubscribeDetails?.();
   window.removeEventListener("keydown", onKeyDown);
 });
 </script>
@@ -98,6 +147,19 @@ onBeforeUnmount(() => {
             </span>
           </div>
           <div class="preview-meta">
+            <span
+              v-if="detailSummary"
+              class="preview-detail"
+              :title="detailSummary"
+            >
+              {{ detailSummary }}
+            </span>
+            <span
+              v-else-if="detailState.mediaId === active.mediaId && detailState.status === 'loading'"
+              class="preview-detail"
+            >
+              Reading metadata…
+            </span>
             <span class="preview-position">{{ active.position }} / {{ active.totalItems }}</span>
             <span class="preview-kind">{{ active.kind }}</span>
           </div>
@@ -136,6 +198,13 @@ onBeforeUnmount(() => {
           />
           <div v-else class="preview-audio-shell">
             <div class="audio-mark" aria-hidden="true">♪</div>
+            <div
+              v-if="detail?.kind === 'audio' && (detail.title || detail.artist)"
+              class="audio-info"
+            >
+              <strong v-if="detail.title" class="audio-title">{{ detail.title }}</strong>
+              <span v-if="detail.artist" class="audio-artist">{{ detail.artist }}</span>
+            </div>
             <audio
               :key="active.mediaId"
               class="preview-audio"
@@ -206,7 +275,8 @@ onBeforeUnmount(() => {
 }
 
 .preview-title,
-.preview-path {
+.preview-path,
+.preview-detail {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -219,15 +289,23 @@ onBeforeUnmount(() => {
 
 .preview-path,
 .preview-kind,
-.preview-position {
+.preview-position,
+.preview-detail,
+.audio-artist {
   color: var(--wf-text-muted);
   font-size: 0.68rem;
 }
 
 .preview-meta {
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.preview-detail {
+  max-width: 220px;
+  font-variant-numeric: tabular-nums;
 }
 
 .preview-position {
@@ -325,7 +403,7 @@ onBeforeUnmount(() => {
   width: min(620px, calc(100% - 128px));
   display: grid;
   justify-items: center;
-  gap: 28px;
+  gap: 20px;
 }
 
 .audio-mark {
@@ -338,6 +416,28 @@ onBeforeUnmount(() => {
   background: var(--wf-surface-raised);
   color: var(--wf-text-muted);
   font-size: 3rem;
+}
+
+.audio-info {
+  min-width: 0;
+  max-width: 100%;
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  text-align: center;
+}
+
+.audio-title,
+.audio-artist {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audio-title {
+  font-size: 0.92rem;
+  font-weight: 600;
 }
 
 .preview-audio {
@@ -354,6 +454,7 @@ onBeforeUnmount(() => {
     border-radius: 9px;
   }
 
+  .preview-detail,
   .preview-kind {
     display: none;
   }

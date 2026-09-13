@@ -8,6 +8,8 @@ export interface ActiveMediaSnapshot {
   name: string;
   relativePath: string;
   kind: MediaKind;
+  /** Platform-issued opaque handle for on-demand operations on the active item. */
+  resourceKey: string;
   uri: string;
   position: number;
   totalItems: number;
@@ -155,6 +157,7 @@ export class MediaActivationController {
       name: media.name,
       relativePath: media.relativePath,
       kind: media.kind,
+      resourceKey: media.resourceKey,
       uri: this.#resourcePort.uriFor(media.resourceKey),
       position: index + 1,
       totalItems,
@@ -229,6 +232,7 @@ function sameSnapshot(
     left.name === right.name &&
     left.relativePath === right.relativePath &&
     left.kind === right.kind &&
+    left.resourceKey === right.resourceKey &&
     left.uri === right.uri &&
     left.position === right.position &&
     left.totalItems === right.totalItems &&
