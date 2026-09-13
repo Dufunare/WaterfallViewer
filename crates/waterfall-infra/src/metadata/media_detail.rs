@@ -1,6 +1,6 @@
 use waterfall_core::{MediaDetail, MediaKind, MetadataReadFailure};
 
-use super::{detail, flac, isobmff_audio};
+use super::{detail, flac, isobmff_audio, ogg};
 
 pub fn read_media_detail(
     locator: &str,
@@ -11,6 +11,9 @@ pub fn read_media_detail(
             return Ok(Some(MediaDetail::Audio(detail)));
         }
         if let Some(detail) = isobmff_audio::read_iso_bmff_audio_detail_file(locator)? {
+            return Ok(Some(MediaDetail::Audio(detail)));
+        }
+        if let Some(detail) = ogg::read_ogg_detail_file(locator)? {
             return Ok(Some(MediaDetail::Audio(detail)));
         }
     }
