@@ -133,7 +133,10 @@ mod tests {
         let registry = ThumbnailRequestRegistry::default();
 
         assert!(!registry.cancel("request-1").unwrap());
-        assert_eq!(registry.telemetry_snapshot().unwrap().pending_cancellations, 1);
+        assert_eq!(
+            registry.telemetry_snapshot().unwrap().pending_cancellations,
+            1
+        );
         let token = registry.register("request-1").unwrap();
         assert!(token.is_cancelled());
         let snapshot = registry.telemetry_snapshot().unwrap();
