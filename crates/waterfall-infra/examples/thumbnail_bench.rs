@@ -171,14 +171,8 @@ fn main() {
         );
     }
 
-    let total_misses: Vec<PhaseSample> = runs
-        .iter()
-        .map(|run| summarize_run(run).0)
-        .collect();
-    let total_hits: Vec<PhaseSample> = runs
-        .iter()
-        .map(|run| summarize_run(run).1)
-        .collect();
+    let total_misses: Vec<PhaseSample> = runs.iter().map(|run| summarize_run(run).0).collect();
+    let total_hits: Vec<PhaseSample> = runs.iter().map(|run| summarize_run(run).1).collect();
     let miss = median_phase(&total_misses);
     let hit = median_phase(&total_hits);
 
@@ -288,12 +282,18 @@ fn run_once(corpus: &Corpus, cache_root: &Path, spec: ThumbnailSpec) -> RunSampl
 fn prepare_cache_dir(path: &Path) {
     if path.exists() {
         fs::remove_dir_all(path).unwrap_or_else(|error| {
-            eprintln!("failed to clear benchmark cache {}: {error}", path.display());
+            eprintln!(
+                "failed to clear benchmark cache {}: {error}",
+                path.display()
+            );
             process::exit(1);
         });
     }
     fs::create_dir_all(path).unwrap_or_else(|error| {
-        eprintln!("failed to create benchmark cache {}: {error}", path.display());
+        eprintln!(
+            "failed to create benchmark cache {}: {error}",
+            path.display()
+        );
         process::exit(1);
     });
 }
@@ -303,11 +303,16 @@ fn cache_destination(cache_root: &Path, index: usize) -> PathBuf {
 }
 
 fn file_len(path: &Path) -> u64 {
-    fs::metadata(path).map(|metadata| metadata.len()).unwrap_or(0)
+    fs::metadata(path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0)
 }
 
 fn is_unsupported(error: &ThumbnailError) -> bool {
-    matches!(error, ThumbnailError::Unsupported(_) | ThumbnailError::Decode(_))
+    matches!(
+        error,
+        ThumbnailError::Unsupported(_) | ThumbnailError::Decode(_)
+    )
 }
 
 fn summarize_run(samples: &RunSamples) -> (PhaseSample, PhaseSample) {
@@ -421,7 +426,9 @@ fn usage() -> &'static str {
 mod tests {
     use std::time::Duration;
 
-    use super::{counts_stable, median_phase, parse_args, FormatSample, PhaseCounts, PhaseSample, RunSamples};
+    use super::{
+        counts_stable, median_phase, parse_args, FormatSample, PhaseCounts, PhaseSample, RunSamples,
+    };
 
     #[test]
     fn parses_defaults_and_overrides() {
@@ -518,7 +525,12 @@ mod tests {
         );
 
         let mut second = first.clone();
-        second.get_mut("jpg").expect("group exists").hit.counts.errors = 1;
+        second
+            .get_mut("jpg")
+            .expect("group exists")
+            .hit
+            .counts
+            .errors = 1;
         assert!(!counts_stable(&[first, second]));
     }
 }
