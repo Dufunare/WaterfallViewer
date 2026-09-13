@@ -38,6 +38,16 @@ struct DerivedRegistration {
     registrations: u64,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MediaResourceTelemetrySnapshot {
+    pub active_session: bool,
+    pub generation: u64,
+    pub source_resource_keys: u64,
+    pub derived_resource_keys: u64,
+    pub derived_registrations: u64,
+    pub total_resource_keys: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResourceRegistryError {
     EmptySessionId,
@@ -197,6 +207,42 @@ impl MediaResourceRegistry {
             session.paths.remove(&key);
         }
         Ok(remove)
+    }
+
+    pub fn telemetry_snapshot(
+        &self,
+    ) -> Result<MediaResourceTelemetrySnapshot, ResourceRegistryError> {
+        let state = self
+            .inner
+            .lock()
+            .map_err(|_| ResourceRegistryError::Poisoned)?;
+        let Some(session) = state.current.as_ref() else {
+            return Ok(MediaResourceTelemetrySnapshot {
+                generation: state.generation,
+                ..MediaResourceTelemetrySnapshot::default()
+            });
+        };
+
+        let derived_resource_keys = session.derived_keys.len() as u64;
+        let total_resource_keys = session.paths.len() as u64;
+        let derived_registrations =
+            session
+                .derived_keys
+                .values()
+                .try_fold(0u64, |total, registration| {
+                    total
+                        .checked_add(registration.registrations)
+                        .ok_or(ResourceRegistryError::ExhaustedRegistrations)
+                })?;
+
+        Ok(MediaResourceTelemetrySnapshot {
+            active_session: true,
+            generation: session.generation,
+            source_resource_keys: total_resource_keys.saturating_sub(derived_resource_keys),
+            derived_resource_keys,
+            derived_registrations,
+            total_resource_keys,
+        })
     }
 
     pub fn resolve(&self, resource_key: &str) -> Option<PathBuf> {
@@ -483,6 +529,72 @@ mod tests {
         assert_eq!(
             registry.resolve(&third),
             Some(PathBuf::from("/cache/thumbs/a.png"))
+        );
+    }
+
+    #[test]
+    fn telemetry_tracks_source_and_derived_lifetimes() {
+        let registry = MediaResourceRegistry::default();
+        assert_eq!(
+            registry.telemetry_snapshot().unwrap(),
+            MediaResourceTelemetrySnapshot::default()
+        );
+
+        registry.begin_session("s1", "/media").unwrap();
+        let first_source = registry.register("s1", "a.jpg").unwrap();
+        registry.register("s1", "b.jpg").unwrap();
+        let derived = registry
+            .register_derived(&first_source, "/cache/thumbs/a.png")
+            .unwrap();
+        registry
+            .register_derived(&first_source, "/cache/thumbs/a.png")
+            .unwrap();
+
+        assert_eq!(
+            registry.telemetry_snapshot().unwrap(),
+            MediaResourceTelemetrySnapshot {
+                active_session: true,
+                generation: 1,
+                source_resource_keys: 2,
+                derived_resource_keys: 1,
+                derived_registrations: 2,
+                total_resource_keys: 3,
+            }
+        );
+
+        assert!(!registry.release_derived(&derived).unwrap());
+        let snapshot = registry.telemetry_snapshot().unwrap();
+        assert_eq!(snapshot.derived_resource_keys, 1);
+        assert_eq!(snapshot.derived_registrations, 1);
+        assert_eq!(snapshot.total_resource_keys, 3);
+
+        assert!(registry.release_derived(&derived).unwrap());
+        let snapshot = registry.telemetry_snapshot().unwrap();
+        assert_eq!(snapshot.derived_resource_keys, 0);
+        assert_eq!(snapshot.derived_registrations, 0);
+        assert_eq!(snapshot.total_resource_keys, 2);
+    }
+
+    #[test]
+    fn telemetry_resets_resource_counts_on_new_session() {
+        let registry = MediaResourceRegistry::default();
+        registry.begin_session("s1", "/media").unwrap();
+        let source = registry.register("s1", "a.jpg").unwrap();
+        registry
+            .register_derived(&source, "/cache/thumbs/a.png")
+            .unwrap();
+
+        registry.begin_session("s2", "/other").unwrap();
+        assert_eq!(
+            registry.telemetry_snapshot().unwrap(),
+            MediaResourceTelemetrySnapshot {
+                active_session: true,
+                generation: 2,
+                source_resource_keys: 0,
+                derived_resource_keys: 0,
+                derived_registrations: 0,
+                total_resource_keys: 0,
+            }
         );
     }
 

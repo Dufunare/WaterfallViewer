@@ -5,7 +5,7 @@ mod scan;
 mod source;
 
 pub use detail::get_media_detail;
-pub use diagnostics::get_thumbnail_request_telemetry;
+pub use diagnostics::{get_media_resource_telemetry, get_thumbnail_request_telemetry};
 pub use representation::{
     cancel_thumbnail_request, get_thumbnail_cache_telemetry, release_representation,
     request_thumbnail,
