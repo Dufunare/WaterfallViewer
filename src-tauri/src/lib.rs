@@ -6,7 +6,8 @@ mod thumbnail_request;
 
 use ipc::{
     cancel_scan, cancel_thumbnail_request, get_media_detail, get_thumbnail_cache_telemetry,
-    pick_source_directory, release_representation, request_thumbnail, start_scan, ScanRegistry,
+    get_thumbnail_request_telemetry, pick_source_directory, release_representation,
+    request_thumbnail, start_scan, ScanRegistry,
 };
 use local_source::LocalSourceRegistry;
 use media_resource::{respond_to_media_request, MediaResourceRegistry, MEDIA_PROTOCOL};
@@ -65,6 +66,7 @@ pub fn run() {
             cancel_scan,
             request_thumbnail,
             get_thumbnail_cache_telemetry,
+            get_thumbnail_request_telemetry,
             cancel_thumbnail_request,
             release_representation,
             get_media_detail,
