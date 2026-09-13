@@ -5,6 +5,8 @@ export interface PointerInput {
   button: number;
   clientX: number;
   clientY: number;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
 }
 
 export interface WheelInput {
@@ -37,7 +39,9 @@ export interface PointerStartResult {
  */
 export class DesktopCanvasInputAdapter {
   #activePointerId: number | null = null;
+  #activeButton: number | null = null;
   #lastPointer: InputPoint | null = null;
+  #moved = false;
 
   get activePointerId(): number | null {
     return this.#activePointerId;
@@ -49,7 +53,9 @@ export class DesktopCanvasInputAdapter {
     }
 
     this.#activePointerId = input.pointerId;
+    this.#activeButton = input.button;
     this.#lastPointer = { x: input.clientX, y: input.clientY };
+    this.#moved = false;
     return { accepted: true, pointerId: input.pointerId };
   }
 
@@ -66,7 +72,26 @@ export class DesktopCanvasInputAdapter {
     if (delta.x === 0 && delta.y === 0) {
       return null;
     }
+    this.#moved = true;
     return { type: "pan", delta };
+  }
+
+  selectionOnPointerUp(
+    input: PointerInput,
+    bounds: InputBounds,
+  ): ViewerInputAction | null {
+    if (
+      this.#activePointerId !== input.pointerId ||
+      this.#activeButton !== 0 ||
+      this.#moved
+    ) {
+      return null;
+    }
+    return {
+      type: "select-at",
+      point: localPoint(input, bounds),
+      mode: input.ctrlKey || input.metaKey ? "toggle" : "replace",
+    };
   }
 
   endPointer(pointerId: number): boolean {
@@ -74,7 +99,9 @@ export class DesktopCanvasInputAdapter {
       return false;
     }
     this.#activePointerId = null;
+    this.#activeButton = null;
     this.#lastPointer = null;
+    this.#moved = false;
     return true;
   }
 
@@ -93,7 +120,9 @@ export class DesktopCanvasInputAdapter {
 
   reset(): void {
     this.#activePointerId = null;
+    this.#activeButton = null;
     this.#lastPointer = null;
+    this.#moved = false;
   }
 }
 
