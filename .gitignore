@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Browser E2E local output
+.playwright-tools
+test-results
+playwright-report
+
 # Rust workspace build output
 /crates/target
 
