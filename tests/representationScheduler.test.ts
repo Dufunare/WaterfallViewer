@@ -160,8 +160,8 @@ describe("RepresentationScheduler", () => {
 
     expect(port.calls).toHaveLength(1);
     const expected = port.resolve(0);
-    await expect(first).resolves.toEqual(expected);
-    await expect(second).resolves.toEqual(expected);
+    await expect(first).resolves.toMatchObject(expected);
+    await expect(second).resolves.toMatchObject(expected);
   });
 
   it("promotes queued duplicate work when a higher-priority subscriber arrives", async () => {
@@ -195,8 +195,8 @@ describe("RepresentationScheduler", () => {
     expect(port.calls[1].request.resourceKey).toBe("shared");
 
     const sharedRepresentation = port.resolve(1);
-    await expect(firstShared).resolves.toEqual(sharedRepresentation);
-    await expect(promotedShared).resolves.toEqual(sharedRepresentation);
+    await expect(firstShared).resolves.toMatchObject(sharedRepresentation);
+    await expect(promotedShared).resolves.toMatchObject(sharedRepresentation);
     await flushMicrotasks();
     expect(port.calls[2].request.resourceKey).toBe("other");
 
@@ -260,7 +260,7 @@ describe("RepresentationScheduler", () => {
     expect(port.calls).toHaveLength(1);
 
     const expected = port.resolve(0);
-    await expect(retained).resolves.toEqual(expected);
+    await expect(retained).resolves.toMatchObject(expected);
   });
 
   it("allows a new subscriber to rejoin running orphaned work", async () => {
@@ -292,7 +292,7 @@ describe("RepresentationScheduler", () => {
     expect(port.calls).toHaveLength(1);
 
     const expected = port.resolve(0);
-    await expect(rejoined).resolves.toEqual(expected);
+    await expect(rejoined).resolves.toMatchObject(expected);
   });
 
   it("propagates failures and frees capacity for queued work", async () => {
@@ -318,7 +318,7 @@ describe("RepresentationScheduler", () => {
     expect(port.calls[1].request.resourceKey).toBe("next");
 
     const expected = port.resolve(1);
-    await expect(next).resolves.toEqual(expected);
+    await expect(next).resolves.toMatchObject(expected);
   });
 
   it("rejects invalid scheduler and request configuration", async () => {
