@@ -7,6 +7,7 @@ import { CanvasSceneModel } from "./application/canvas/canvasSceneModel";
 import { MediaSessionController } from "./application/mediaSession";
 import { MediaQueryController } from "./application/query/mediaQueryController";
 import { RepresentationScheduler } from "./application/resources/representationScheduler";
+import { MediaSelectionController } from "./application/selection/mediaSelectionController";
 import { MediaActivationController } from "./application/viewer/mediaActivationController";
 import { PreviewMediaDetailController } from "./application/viewer/previewMediaDetailController";
 import { ViewerWorkspaceController } from "./application/viewer/viewerWorkspaceController";
@@ -19,6 +20,7 @@ import "./theme/base.css";
 
 const sessionController = new MediaSessionController(tauriMediaScanPort);
 const query = markRaw(new MediaQueryController(sessionController));
+const selection = markRaw(new MediaSelectionController(sessionController));
 const representationScheduler = new RepresentationScheduler(
   tauriMediaRepresentationPort,
   { maxConcurrent: 6 },
@@ -82,6 +84,7 @@ window.addEventListener(
     activation.dispose();
     flowBrowser.dispose();
     workspace.dispose();
+    selection.dispose();
     query.dispose();
   },
   { once: true },
@@ -90,6 +93,7 @@ window.addEventListener(
 createApp(App, {
   workspace,
   query,
+  selection,
   flowBrowser,
   createCanvasBrowser,
   activation,
