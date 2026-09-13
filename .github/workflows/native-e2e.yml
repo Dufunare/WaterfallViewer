@@ -79,7 +79,7 @@ jobs:
           echo "WATERFALL_NATIVE_E2E_SOURCE=$corpus" >> "$GITHUB_ENV"
 
       - name: Build native E2E application
-        run: pnpm tauri build --no-bundle --ci --features native-e2e
+        run: pnpm tauri build --debug --no-bundle --ci --features native-e2e
 
       - name: Run native WebDriver E2E
         run: xvfb-run -a .webdriver-tools/node_modules/.bin/wdio run native-e2e/wdio.conf.mjs
