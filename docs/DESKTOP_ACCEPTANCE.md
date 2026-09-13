@@ -6,6 +6,8 @@
 
 This document defines the evidence required before WaterfallViewer can claim a Desktop 1.0 release candidate is functionally acceptable on Windows. It intentionally separates automated gates from interactive checks instead of pretending that browser automation proves native platform behavior.
 
+Use [`DESKTOP_ACCEPTANCE_RECORD_TEMPLATE.md`](DESKTOP_ACCEPTANCE_RECORD_TEMPLATE.md) to record evidence for a concrete candidate.
+
 ## 1. Required build evidence
 
 A candidate must first pass the repository's ordinary CI and the explicit Windows Release Candidate workflow.
@@ -179,7 +181,7 @@ When signing is introduced, signature verification becomes a separate mandatory 
 
 ## 11. Acceptance record
 
-For each candidate, record:
+For each candidate, copy [`DESKTOP_ACCEPTANCE_RECORD_TEMPLATE.md`](DESKTOP_ACCEPTANCE_RECORD_TEMPLATE.md) and record:
 
 - commit SHA;
 - workflow run IDs for ordinary CI and Windows Release Candidate;
