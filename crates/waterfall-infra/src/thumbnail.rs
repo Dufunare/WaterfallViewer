@@ -2,7 +2,10 @@ use std::{
     fs,
     io::Cursor,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
 };
 
 use image::{ImageFormat, ImageReader, Limits};
@@ -34,11 +37,35 @@ pub struct ThumbnailInfo {
     pub height: u32,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct ThumbnailCancellationToken {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl ThumbnailCancellationToken {
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    fn check(&self) -> Result<(), ThumbnailError> {
+        if self.is_cancelled() {
+            Err(ThumbnailError::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum ThumbnailError {
     InvalidSpec(String),
     Unsupported(String),
     Decode(String),
+    Cancelled,
     Io(std::io::Error),
 }
 
@@ -48,6 +75,7 @@ impl std::fmt::Display for ThumbnailError {
             Self::InvalidSpec(message) | Self::Unsupported(message) | Self::Decode(message) => {
                 formatter.write_str(message)
             }
+            Self::Cancelled => formatter.write_str("thumbnail request was cancelled"),
             Self::Io(error) => write!(formatter, "{error}"),
         }
     }
@@ -71,6 +99,29 @@ impl ImageThumbnailer {
         destination: &Path,
         spec: ThumbnailSpec,
     ) -> Result<ThumbnailInfo, ThumbnailError> {
+        self.ensure_png_cancellable(
+            source,
+            destination,
+            spec,
+            &ThumbnailCancellationToken::default(),
+        )
+    }
+
+    /// Generate or reuse a PNG thumbnail while observing cancellation between
+    /// expensive pipeline stages.
+    ///
+    /// Image decoding, resizing, and encoding are library calls that cannot be
+    /// preempted safely mid-call, so cancellation is cooperative rather than a
+    /// hard thread interruption. A cancellation observed before the final
+    /// atomic write leaves no partially published cache file.
+    pub fn ensure_png_cancellable(
+        &self,
+        source: &Path,
+        destination: &Path,
+        spec: ThumbnailSpec,
+        cancellation: &ThumbnailCancellationToken,
+    ) -> Result<ThumbnailInfo, ThumbnailError> {
+        cancellation.check()?;
         if destination.exists() {
             return dimensions_of(destination);
         }
@@ -79,6 +130,7 @@ impl ImageThumbnailer {
             ThumbnailError::InvalidSpec("thumbnail destination must have a parent".to_owned())
         })?;
         fs::create_dir_all(parent)?;
+        cancellation.check()?;
 
         let mut reader = ImageReader::open(source)
             .map_err(ThumbnailError::Io)?
@@ -101,11 +153,15 @@ impl ImageThumbnailer {
         limits.max_image_height = Some(MAX_INPUT_DIMENSION);
         limits.max_alloc = Some(MAX_DECODE_ALLOCATION);
         reader.limits(limits);
+        cancellation.check()?;
 
         let decoded = reader
             .decode()
             .map_err(|error| ThumbnailError::Decode(error.to_string()))?;
+        cancellation.check()?;
+
         let thumbnail = decoded.thumbnail(spec.max_edge, spec.max_edge);
+        cancellation.check()?;
         let info = ThumbnailInfo {
             width: thumbnail.width(),
             height: thumbnail.height(),
@@ -115,6 +171,7 @@ impl ImageThumbnailer {
         thumbnail
             .write_to(&mut encoded, ImageFormat::Png)
             .map_err(|error| ThumbnailError::Decode(error.to_string()))?;
+        cancellation.check()?;
 
         write_atomically(destination, encoded.into_inner())?;
         Ok(info)
@@ -222,6 +279,31 @@ mod tests {
                 height: 16
             }
         );
+    }
+
+    #[test]
+    fn cancellation_prevents_reuse_or_generation() {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("source.png");
+        let destination = dir.path().join("thumb.png");
+        ImageBuffer::from_pixel(80, 40, Rgba([1_u8, 2, 3, 255]))
+            .save(&source)
+            .unwrap();
+        ImageBuffer::from_pixel(32, 16, Rgba([4_u8, 5, 6, 255]))
+            .save(&destination)
+            .unwrap();
+        let cancellation = ThumbnailCancellationToken::default();
+        cancellation.cancel();
+
+        assert!(matches!(
+            ImageThumbnailer.ensure_png_cancellable(
+                &source,
+                &destination,
+                ThumbnailSpec::new(32).unwrap(),
+                &cancellation,
+            ),
+            Err(ThumbnailError::Cancelled)
+        ));
     }
 
     #[test]
