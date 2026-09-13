@@ -8,13 +8,15 @@ function pointer(
   clientX: number,
   clientY: number,
   button = 0,
+  modifiers: { ctrlKey?: boolean; metaKey?: boolean } = {},
 ) {
-  return { pointerId, clientX, clientY, button };
+  return { pointerId, clientX, clientY, button, ...modifiers };
 }
 
 describe("DesktopCanvasInputAdapter", () => {
-  it("turns an accepted pointer drag into pan actions", () => {
+  it("turns an accepted pointer drag into pan actions and not selection", () => {
     const input = new DesktopCanvasInputAdapter();
+    const bounds = { left: 40, top: 20 };
 
     expect(input.beginPointer(pointer(4, 100, 200))).toEqual({
       accepted: true,
@@ -25,8 +27,44 @@ describe("DesktopCanvasInputAdapter", () => {
       delta: { x: 12, y: -7 },
     });
     expect(input.movePointer(pointer(4, 112, 193))).toBeNull();
+    expect(input.selectionOnPointerUp(pointer(4, 112, 193), bounds)).toBeNull();
     expect(input.endPointer(4)).toBe(true);
     expect(input.movePointer(pointer(4, 120, 210))).toBeNull();
+  });
+
+  it("maps a primary click to replace or toggle selection", () => {
+    const input = new DesktopCanvasInputAdapter();
+    const bounds = { left: 40, top: 20 };
+
+    input.beginPointer(pointer(7, 100, 80));
+    expect(input.selectionOnPointerUp(pointer(7, 100, 80), bounds)).toEqual({
+      type: "select-at",
+      point: { x: 60, y: 60 },
+      mode: "replace",
+    });
+    input.endPointer(7);
+
+    input.beginPointer(pointer(8, 120, 90));
+    expect(
+      input.selectionOnPointerUp(
+        pointer(8, 120, 90, 0, { ctrlKey: true }),
+        bounds,
+      ),
+    ).toEqual({
+      type: "select-at",
+      point: { x: 80, y: 70 },
+      mode: "toggle",
+    });
+    input.endPointer(8);
+  });
+
+  it("does not select with middle-button navigation", () => {
+    const input = new DesktopCanvasInputAdapter();
+    const bounds = { left: 0, top: 0 };
+
+    input.beginPointer(pointer(2, 5, 8, 1));
+    expect(input.selectionOnPointerUp(pointer(2, 5, 8, 1), bounds)).toBeNull();
+    expect(input.endPointer(2)).toBe(true);
   });
 
   it("ignores unsupported buttons and unrelated pointer ids", () => {
