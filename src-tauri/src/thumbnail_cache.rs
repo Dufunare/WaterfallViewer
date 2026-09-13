@@ -12,6 +12,19 @@ const THUMBNAIL_CACHE_TARGET_BYTES: u64 = 1_700 * 1024 * 1024;
 const THUMBNAIL_CACHE_MIN_AGE: Duration = Duration::from_secs(5 * 60);
 const GENERATED_FILES_BETWEEN_MAINTENANCE: u64 = 64;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ThumbnailCacheTelemetrySnapshot {
+    pub generated_registrations: u64,
+    pub reused_registrations: u64,
+    pub active_resource_keys: u64,
+    pub active_registrations: u64,
+    pub maintenance_runs: u64,
+    pub maintenance_failures: u64,
+    pub removed_files: u64,
+    pub removed_bytes: u64,
+    pub last_observed_cache_bytes: u64,
+}
+
 #[derive(Clone, Default)]
 pub struct ThumbnailCacheManager {
     inner: Arc<Mutex<ThumbnailCacheState>>,
@@ -22,6 +35,18 @@ struct ThumbnailCacheState {
     active: HashMap<String, ActiveCachePath>,
     maintenance_initialized: bool,
     generated_since_maintenance: u64,
+    telemetry: ThumbnailCacheTelemetry,
+}
+
+#[derive(Default)]
+struct ThumbnailCacheTelemetry {
+    generated_registrations: u64,
+    reused_registrations: u64,
+    maintenance_runs: u64,
+    maintenance_failures: u64,
+    removed_files: u64,
+    removed_bytes: u64,
+    last_observed_cache_bytes: u64,
 }
 
 struct ActiveCachePath {
@@ -30,11 +55,6 @@ struct ActiveCachePath {
 }
 
 impl ThumbnailCacheManager {
-    /// Register one backend representation registration as an active cache
-    /// consumer. Maintenance runs on the first registration and periodically
-    /// after newly generated files. It never removes paths still registered as
-    /// active and relies on a short age grace period to protect concurrently
-    /// published files that have not reached registration yet.
     pub fn register_and_maintain(
         &self,
         resource_key: &str,
@@ -74,6 +94,11 @@ impl ThumbnailCacheManager {
             if newly_generated {
                 state.generated_since_maintenance =
                     state.generated_since_maintenance.saturating_add(1);
+                state.telemetry.generated_registrations =
+                    state.telemetry.generated_registrations.saturating_add(1);
+            } else {
+                state.telemetry.reused_registrations =
+                    state.telemetry.reused_registrations.saturating_add(1);
             }
 
             let should_maintain = !state.maintenance_initialized
@@ -97,12 +122,36 @@ impl ThumbnailCacheManager {
             return Ok(None);
         }
 
-        let report = prune_disk_cache(
+        let report = match prune_disk_cache(
             cache_root,
             thumbnail_cache_policy(),
             &protected_paths.expect("maintenance paths exist when maintenance is requested"),
-        )
-        .map_err(|error| error.to_string())?;
+        ) {
+            Ok(report) => report,
+            Err(error) => {
+                if let Ok(mut state) = self.inner.lock() {
+                    state.telemetry.maintenance_failures =
+                        state.telemetry.maintenance_failures.saturating_add(1);
+                }
+                return Err(error.to_string());
+            }
+        };
+
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| "thumbnail cache manager lock poisoned".to_owned())?;
+        state.telemetry.maintenance_runs = state.telemetry.maintenance_runs.saturating_add(1);
+        state.telemetry.removed_files = state
+            .telemetry
+            .removed_files
+            .saturating_add(report.removed_files);
+        state.telemetry.removed_bytes = state
+            .telemetry
+            .removed_bytes
+            .saturating_add(report.removed_bytes);
+        state.telemetry.last_observed_cache_bytes = report.after_bytes;
+
         Ok(Some(report))
     }
 
@@ -123,6 +172,30 @@ impl ThumbnailCacheManager {
             state.active.remove(resource_key);
         }
         Ok(())
+    }
+
+    pub fn telemetry_snapshot(&self) -> Result<ThumbnailCacheTelemetrySnapshot, String> {
+        let state = self
+            .inner
+            .lock()
+            .map_err(|_| "thumbnail cache manager lock poisoned".to_owned())?;
+        let active_registrations = state
+            .active
+            .values()
+            .map(|active| active.registrations)
+            .fold(0_u64, u64::saturating_add);
+
+        Ok(ThumbnailCacheTelemetrySnapshot {
+            generated_registrations: state.telemetry.generated_registrations,
+            reused_registrations: state.telemetry.reused_registrations,
+            active_resource_keys: state.active.len() as u64,
+            active_registrations,
+            maintenance_runs: state.telemetry.maintenance_runs,
+            maintenance_failures: state.telemetry.maintenance_failures,
+            removed_files: state.telemetry.removed_files,
+            removed_bytes: state.telemetry.removed_bytes,
+            last_observed_cache_bytes: state.telemetry.last_observed_cache_bytes,
+        })
     }
 }
 
@@ -154,19 +227,50 @@ mod tests {
             .register_and_maintain("1/4", &path, dir.path(), false)
             .unwrap();
 
-        {
-            let state = manager.inner.lock().unwrap();
-            assert_eq!(state.active.get("1/4").unwrap().registrations, 2);
-        }
+        assert_eq!(
+            manager.telemetry_snapshot().unwrap(),
+            ThumbnailCacheTelemetrySnapshot {
+                reused_registrations: 2,
+                active_resource_keys: 1,
+                active_registrations: 2,
+                maintenance_runs: 1,
+                last_observed_cache_bytes: b"thumbnail".len() as u64,
+                ..ThumbnailCacheTelemetrySnapshot::default()
+            }
+        );
 
         manager.release("1/4").unwrap();
-        {
-            let state = manager.inner.lock().unwrap();
-            assert_eq!(state.active.get("1/4").unwrap().registrations, 1);
-        }
+        let snapshot = manager.telemetry_snapshot().unwrap();
+        assert_eq!(snapshot.active_resource_keys, 1);
+        assert_eq!(snapshot.active_registrations, 1);
 
         manager.release("1/4").unwrap();
-        assert!(!manager.inner.lock().unwrap().active.contains_key("1/4"));
+        let snapshot = manager.telemetry_snapshot().unwrap();
+        assert_eq!(snapshot.active_resource_keys, 0);
+        assert_eq!(snapshot.active_registrations, 0);
+    }
+
+    #[test]
+    fn generated_and_reused_registrations_are_counted_separately() {
+        let dir = tempdir().unwrap();
+        let generated = dir.path().join("generated.png");
+        let reused = dir.path().join("reused.png");
+        fs::write(&generated, b"generated").unwrap();
+        fs::write(&reused, b"reused").unwrap();
+        let manager = ThumbnailCacheManager::default();
+
+        manager
+            .register_and_maintain("1/1", &generated, dir.path(), true)
+            .unwrap();
+        manager
+            .register_and_maintain("1/2", &reused, dir.path(), false)
+            .unwrap();
+
+        let snapshot = manager.telemetry_snapshot().unwrap();
+        assert_eq!(snapshot.generated_registrations, 1);
+        assert_eq!(snapshot.reused_registrations, 1);
+        assert_eq!(snapshot.active_resource_keys, 2);
+        assert_eq!(snapshot.active_registrations, 2);
     }
 
     #[test]
@@ -174,5 +278,9 @@ mod tests {
         let manager = ThumbnailCacheManager::default();
         manager.release("missing").unwrap();
         manager.release("missing").unwrap();
+        assert_eq!(
+            manager.telemetry_snapshot().unwrap(),
+            ThumbnailCacheTelemetrySnapshot::default()
+        );
     }
 }

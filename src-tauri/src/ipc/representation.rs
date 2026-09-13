@@ -14,7 +14,7 @@ use waterfall_infra::{
 
 use crate::{
     media_resource::{MediaResourceRegistry, ResourceRegistryError},
-    thumbnail_cache::ThumbnailCacheManager,
+    thumbnail_cache::{ThumbnailCacheManager, ThumbnailCacheTelemetrySnapshot},
     thumbnail_request::ThumbnailRequestRegistry,
 };
 
@@ -26,6 +26,36 @@ pub struct ThumbnailRepresentationDto {
     resource_key: String,
     width: u32,
     height: u32,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThumbnailCacheTelemetryDto {
+    generated_registrations: u64,
+    reused_registrations: u64,
+    active_resource_keys: u64,
+    active_registrations: u64,
+    maintenance_runs: u64,
+    maintenance_failures: u64,
+    removed_files: u64,
+    removed_bytes: u64,
+    last_observed_cache_bytes: u64,
+}
+
+impl From<ThumbnailCacheTelemetrySnapshot> for ThumbnailCacheTelemetryDto {
+    fn from(snapshot: ThumbnailCacheTelemetrySnapshot) -> Self {
+        Self {
+            generated_registrations: snapshot.generated_registrations,
+            reused_registrations: snapshot.reused_registrations,
+            active_resource_keys: snapshot.active_resource_keys,
+            active_registrations: snapshot.active_registrations,
+            maintenance_runs: snapshot.maintenance_runs,
+            maintenance_failures: snapshot.maintenance_failures,
+            removed_files: snapshot.removed_files,
+            removed_bytes: snapshot.removed_bytes,
+            last_observed_cache_bytes: snapshot.last_observed_cache_bytes,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -120,6 +150,16 @@ pub async fn request_thumbnail(
 }
 
 #[tauri::command]
+pub fn get_thumbnail_cache_telemetry(
+    cache: State<'_, ThumbnailCacheManager>,
+) -> Result<ThumbnailCacheTelemetryDto, RepresentationCommandError> {
+    cache
+        .telemetry_snapshot()
+        .map(ThumbnailCacheTelemetryDto::from)
+        .map_err(RepresentationCommandError::internal)
+}
+
+#[tauri::command]
 pub fn cancel_thumbnail_request(
     requests: State<'_, ThumbnailRequestRegistry>,
     request_id: String,
@@ -188,8 +228,6 @@ fn generate_thumbnail_representation(
     if let Err(error) =
         cache.register_and_maintain(&thumbnail_key, &cache_path, &cache_root, newly_generated)
     {
-        // Cache maintenance is deliberately best-effort. The cached file is an
-        // optimization, so maintenance failure must not make browsing fail.
         eprintln!("thumbnail cache maintenance failed: {error}");
     }
 

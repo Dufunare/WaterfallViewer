@@ -4,6 +4,9 @@ mod scan;
 mod source;
 
 pub use detail::get_media_detail;
-pub use representation::{cancel_thumbnail_request, release_representation, request_thumbnail};
+pub use representation::{
+    cancel_thumbnail_request, get_thumbnail_cache_telemetry, release_representation,
+    request_thumbnail,
+};
 pub use scan::{cancel_scan, start_scan, ScanRegistry};
 pub use source::pick_source_directory;
