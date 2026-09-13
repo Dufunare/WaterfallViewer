@@ -1,16 +1,7 @@
 import { createApp, markRaw } from "vue";
 
 import App from "./App.vue";
-import { MediaBrowserController } from "./application/browser/mediaBrowserController";
-import { CanvasBrowserController } from "./application/canvas/canvasBrowserController";
-import { CanvasSceneModel } from "./application/canvas/canvasSceneModel";
-import { MediaSessionController } from "./application/mediaSession";
-import { MediaQueryController } from "./application/query/mediaQueryController";
-import { RepresentationScheduler } from "./application/resources/representationScheduler";
-import { MediaSelectionController } from "./application/selection/mediaSelectionController";
-import { MediaActivationController } from "./application/viewer/mediaActivationController";
-import { PreviewMediaDetailController } from "./application/viewer/previewMediaDetailController";
-import { ViewerWorkspaceController } from "./application/viewer/viewerWorkspaceController";
+import { createViewerRuntime } from "./bootstrap/viewerRuntime";
 import { tauriMediaDetailPort } from "./platform/tauri/mediaDetail";
 import { tauriMediaRepresentationPort } from "./platform/tauri/mediaRepresentation";
 import { tauriMediaResourcePort } from "./platform/tauri/mediaResource";
@@ -18,84 +9,22 @@ import { tauriMediaScanPort } from "./platform/tauri/mediaScan";
 import { tauriSourcePickerPort } from "./platform/tauri/sourcePicker";
 import "./theme/base.css";
 
-const sessionController = new MediaSessionController(tauriMediaScanPort);
-const query = markRaw(new MediaQueryController(sessionController));
-const selection = markRaw(new MediaSelectionController(sessionController));
-const representationScheduler = new RepresentationScheduler(
-  tauriMediaRepresentationPort,
-  { maxConcurrent: 6 },
-);
-const workspace = markRaw(
-  new ViewerWorkspaceController(sessionController, tauriSourcePickerPort),
-);
-const activation = markRaw(
-  new MediaActivationController(sessionController, tauriMediaResourcePort),
-);
-const previewDetails = markRaw(
-  new PreviewMediaDetailController(activation, tauriMediaDetailPort),
-);
-const flowBrowser = markRaw(
-  new MediaBrowserController({
-    sessionController,
-    sourcePicker: tauriSourcePickerPort,
-    representationScheduler,
-    resourcePort: tauriMediaResourcePort,
-  }),
-);
-const canvasScene = new CanvasSceneModel({
-  atlas: {
-    worldWidth: 4096,
-    itemHeight: 260,
-    gap: 18,
-    minItemWidth: 72,
-  },
-  viewport: {
-    cellSize: 512,
-    overscanPx: 0,
-    thumbnailMinEdgePx: 48,
-    detailMinEdgePx: 960,
-    camera: {
-      minZoom: 0.05,
-      maxZoom: 24,
-    },
-  },
+const runtime = createViewerRuntime({
+  scan: tauriMediaScanPort,
+  sourcePicker: tauriSourcePickerPort,
+  representation: tauriMediaRepresentationPort,
+  resource: tauriMediaResourcePort,
+  detail: tauriMediaDetailPort,
 });
 
-const createCanvasBrowser = () =>
-  new CanvasBrowserController(
-    {
-      sessionController,
-      sourcePicker: tauriSourcePickerPort,
-      representationScheduler,
-      resourcePort: tauriMediaResourcePort,
-      scene: canvasScene,
-    },
-    {
-      renderOverscanPx: 320,
-      maxThumbnailEdge: 2048,
-      maxDetailEdge: 4096,
-    },
-  );
-
-window.addEventListener(
-  "beforeunload",
-  () => {
-    previewDetails.dispose();
-    activation.dispose();
-    flowBrowser.dispose();
-    workspace.dispose();
-    selection.dispose();
-    query.dispose();
-  },
-  { once: true },
-);
+window.addEventListener("beforeunload", () => runtime.dispose(), { once: true });
 
 createApp(App, {
-  workspace,
-  query,
-  selection,
-  flowBrowser,
-  createCanvasBrowser,
-  activation,
-  previewDetails,
+  workspace: markRaw(runtime.workspace),
+  query: markRaw(runtime.query),
+  selection: markRaw(runtime.selection),
+  flowBrowser: markRaw(runtime.flowBrowser),
+  createCanvasBrowser: runtime.createCanvasBrowser,
+  activation: markRaw(runtime.activation),
+  previewDetails: markRaw(runtime.previewDetails),
 }).mount("#app");
