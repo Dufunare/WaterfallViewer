@@ -10,7 +10,10 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, State};
 use waterfall_infra::{ImageThumbnailer, ThumbnailError, ThumbnailSpec};
 
-use crate::media_resource::{MediaResourceRegistry, ResourceRegistryError};
+use crate::{
+    media_resource::{MediaResourceRegistry, ResourceRegistryError},
+    thumbnail_cache::ThumbnailCacheManager,
+};
 
 const THUMBNAIL_CACHE_VERSION: &[u8] = b"waterfall-thumbnail-v1";
 
@@ -57,6 +60,7 @@ impl RepresentationCommandError {
 pub async fn request_thumbnail(
     app: AppHandle,
     resources: State<'_, MediaResourceRegistry>,
+    cache: State<'_, ThumbnailCacheManager>,
     resource_key: String,
     max_edge: u32,
 ) -> Result<ThumbnailRepresentationDto, RepresentationCommandError> {
@@ -74,9 +78,10 @@ pub async fn request_thumbnail(
         .join("image-thumbnails")
         .join("v1");
     let resources = resources.inner().clone();
+    let cache = cache.inner().clone();
 
     tauri::async_runtime::spawn_blocking(move || {
-        generate_thumbnail_representation(resources, resource_key, cache_root, spec)
+        generate_thumbnail_representation(resources, cache, resource_key, cache_root, spec)
     })
     .await
     .map_err(|error| {
@@ -87,6 +92,7 @@ pub async fn request_thumbnail(
 #[tauri::command]
 pub fn release_representation(
     resources: State<'_, MediaResourceRegistry>,
+    cache: State<'_, ThumbnailCacheManager>,
     resource_key: String,
 ) -> Result<bool, RepresentationCommandError> {
     if resource_key.trim().is_empty() {
@@ -94,13 +100,17 @@ pub fn release_representation(
             "resourceKey must not be empty",
         ));
     }
-    resources
-        .release_derived(&resource_key)
-        .map_err(map_registry_error)
+
+    let release_result = resources.release_derived(&resource_key);
+    if let Err(error) = cache.release(&resource_key) {
+        eprintln!("failed to release thumbnail cache lease for {resource_key}: {error}");
+    }
+    release_result.map_err(map_registry_error)
 }
 
 fn generate_thumbnail_representation(
     resources: MediaResourceRegistry,
+    cache: ThumbnailCacheManager,
     resource_key: String,
     cache_root: PathBuf,
     spec: ThumbnailSpec,
@@ -109,12 +119,24 @@ fn generate_thumbnail_representation(
         RepresentationCommandError::unavailable("resource key is not active or registered")
     })?;
     let cache_path = thumbnail_cache_path(&cache_root, &source, spec)?;
+    let newly_generated = !cache_path.exists();
     let info = ImageThumbnailer
         .ensure_png(&source, &cache_path, spec)
         .map_err(map_thumbnail_error)?;
     let thumbnail_key = resources
-        .register_derived(&resource_key, cache_path)
+        .register_derived(&resource_key, cache_path.clone())
         .map_err(map_registry_error)?;
+
+    if let Err(error) = cache.register_and_maintain(
+        &thumbnail_key,
+        &cache_path,
+        &cache_root,
+        newly_generated,
+    ) {
+        // Cache maintenance is deliberately best-effort. The cached file is an
+        // optimization, so maintenance failure must not make browsing fail.
+        eprintln!("thumbnail cache maintenance failed: {error}");
+    }
 
     Ok(ThumbnailRepresentationDto {
         resource_key: thumbnail_key,
