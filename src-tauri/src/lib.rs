@@ -2,15 +2,17 @@ mod ipc;
 mod local_source;
 mod media_resource;
 mod thumbnail_cache;
+mod thumbnail_request;
 
 use ipc::{
-    cancel_scan, pick_source_directory, release_representation, request_thumbnail, start_scan,
-    ScanRegistry,
+    cancel_scan, cancel_thumbnail_request, pick_source_directory, release_representation,
+    request_thumbnail, start_scan, ScanRegistry,
 };
 use local_source::LocalSourceRegistry;
 use media_resource::{respond_to_media_request, MediaResourceRegistry, MEDIA_PROTOCOL};
 use tauri::Manager;
 use thumbnail_cache::ThumbnailCacheManager;
+use thumbnail_request::ThumbnailRequestRegistry;
 use waterfall_infra::SqliteVisualMetadataCache;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -46,6 +48,7 @@ pub fn run() {
         .manage(LocalSourceRegistry::default())
         .manage(resources)
         .manage(ThumbnailCacheManager::default())
+        .manage(ThumbnailRequestRegistry::default())
         .register_asynchronous_uri_scheme_protocol(
             MEDIA_PROTOCOL,
             move |_context, request, responder| {
@@ -61,6 +64,7 @@ pub fn run() {
             start_scan,
             cancel_scan,
             request_thumbnail,
+            cancel_thumbnail_request,
             release_representation,
             pick_source_directory
         ])
