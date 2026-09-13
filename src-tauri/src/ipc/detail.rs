@@ -44,8 +44,9 @@ pub async fn get_media_detail(
     })?;
 
     tauri::async_runtime::spawn_blocking(move || {
-        read_media_detail(&path.to_string_lossy(), &kind)
-            .map_err(|error| MediaDetailCommandError::new("metadata-unavailable", error.to_string()))
+        read_media_detail(&path.to_string_lossy(), &kind).map_err(|error| {
+            MediaDetailCommandError::new("metadata-unavailable", error.to_string())
+        })
     })
     .await
     .map_err(|error| {
