@@ -1,13 +1,14 @@
-# Thumbnail and Media Resource Runtime Telemetry Baseline
+# Thumbnail, Media Resource, and Canvas Runtime Telemetry Baseline
 
 > Status: incremental living baseline supplement
 > Baseline date: 2026-09-13
 > Cache telemetry baseline: `860b408b` (`feat(cache): add thumbnail cache telemetry snapshot`)
 > Request telemetry baseline: `b94ea0bf` (`feat(telemetry): add thumbnail request runtime snapshot`)
 > Media resource telemetry baseline: `1fb9ad10` (`feat(telemetry): add media resource registry snapshot`)
+> Canvas texture telemetry baseline: `7763356a` (`feat(telemetry): add Canvas texture lease snapshot`)
 > Parent living status: [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md)
 
-This document records the runtime cache/request/resource telemetry behavior added after the current `IMPLEMENTATION_STATUS.md` baseline. It is intentionally narrow and should be folded back into the main living status when that document is next updated through a safe whole-file edit.
+This document records the runtime cache/request/resource/Canvas telemetry behavior added after the current `IMPLEMENTATION_STATUS.md` baseline. It is intentionally narrow and should be folded back into the main living status when that document is next updated through a safe whole-file edit.
 
 ## Runtime cache telemetry
 
@@ -65,7 +66,7 @@ The existing bound of 256 pending cancellation IDs remains unchanged. Telemetry 
 
 ## Runtime media-resource telemetry
 
-The active `MediaResourceRegistry` now exposes an on-demand snapshot through the read-only `get_media_resource_telemetry` command:
+The active `MediaResourceRegistry` exposes an on-demand snapshot through the read-only `get_media_resource_telemetry` command:
 
 - `activeSession`: whether a current resource generation exists;
 - `generation`: the opaque resource generation currently represented by the registry;
@@ -84,17 +85,39 @@ Starting a new source session replaces the previous generation and resets all cu
 
 `derivedResourceKeys` and `derivedRegistrations` are intentionally separate. If multiple backend registrations share the same derived path, one deduplicated resource key can have more than one registration. Releasing one registration decreases `derivedRegistrations` while keeping the key resolvable; the final release removes that derived key from both the registration index and the protocol path table. This makes leaked or non-converging derived-resource lifetimes observable without changing their lifecycle policy.
 
+## Runtime Canvas texture-lifetime telemetry
+
+The Pixi Canvas renderer now exposes an on-demand in-process snapshot through `PixiCanvasRenderer.telemetrySnapshot()`:
+
+- `initialized`: whether the renderer currently owns a live Pixi application;
+- `renderedItems`: the current bounded render-record count;
+- `textureEntries`: unique texture lease-pool entries, including entries that are still completing their final unload;
+- `textureRefs`: total live reference count across texture entries;
+- `unloadingTextureEntries`: entries whose final reference has been released but whose asynchronous unload has not yet completed.
+
+The underlying `AssetLeasePool.telemetrySnapshot()` computes `entries`, `totalRefs`, and `unloadingEntries` directly from the existing reference-counted pool. No second texture registry or sampling loop is added.
+
+### Texture convergence semantics
+
+Canvas culling and scene updates already remove off-screen render records and release their texture leases. The new snapshot makes that lifecycle observable: after render records disappear, texture refs should fall accordingly; after final release, an entry may transiently remain in `unloadingTextureEntries` until its existing backend unload finishes, after which the entry itself is removed.
+
+Multiple rendered items can legitimately share a texture URI, so `textureRefs` can exceed `textureEntries`. Likewise, `textureEntries` can temporarily exceed the number of live refs while asynchronous final unload is still in flight. These distinctions are useful when diagnosing leaks or delayed cleanup and should not be collapsed into a single "texture count" metric.
+
+This is **texture lease/lifetime telemetry**, not GPU-memory telemetry. It does not query WebGL driver allocation size, Pixi internal GPU caches, VRAM usage, browser process memory, or hardware counters, and it should not be presented as such.
+
 ## Performance and architecture implications
 
-None of the telemetry commands performs a filesystem scan. Cache snapshot creation locks the existing cache-manager state briefly and sums in-memory active registrations. Request snapshot creation locks the request registry briefly and inspects the currently active cancellation tokens. Media-resource snapshot creation locks the resource registry briefly and derives counts from its current in-memory maps.
+None of the backend telemetry commands performs a filesystem scan. Cache snapshot creation locks the existing cache-manager state briefly and sums in-memory active registrations. Request snapshot creation locks the request registry briefly and inspects the currently active cancellation tokens. Media-resource snapshot creation locks the resource registry briefly and derives counts from its current in-memory maps.
 
-No frontend polling, dashboard or always-on diagnostics loop has been introduced. Consumers may explicitly request snapshots when diagnostics are needed. Normal browsing, resource registration, cancellation, URI resolution and cache-maintenance policy remain unchanged.
+Canvas texture telemetry is synchronous and bounded by the already bounded lease pool. It only iterates the renderer's existing in-memory texture entries when explicitly requested and does not change rendering, culling, representation scheduling, texture loading, reference counting or unload policy.
+
+No frontend polling, dashboard or always-on diagnostics loop has been introduced. Consumers may explicitly request snapshots when diagnostics are needed.
 
 The following remain out of scope and are still engineering debt:
 
 - representative real-corpus benchmark result baselines;
 - process memory telemetry;
-- PixiJS/GPU texture or GPU-memory telemetry;
+- true PixiJS/WebGL GPU-memory or driver-level allocation telemetry;
 - end-to-end telemetry presentation/diagnostic UX;
 - Playwright/Tauri end-to-end interaction tests;
 - continuous disk usage accounting between maintenance passes.
@@ -107,4 +130,6 @@ Request-registry tests cover active cancellation visibility, cancellation-before
 
 Media-resource tests cover source/derived key counting, shared derived-registration reference counts, convergence after partial and final release, and reset to a fresh generation when a new source session begins. Existing generation invalidation, URI range handling and MIME behavior remain covered by their pre-existing tests.
 
-All three telemetry slices passed Tauri lockfile verification, rustfmt, Clippy, Rust tests and the integrated desktop smoke build before merge.
+Frontend `AssetLeasePool` tests now also cover telemetry for shared references, the final-release unloading interval, deferred loads that finish after their final consumer leaves, safe same-key reacquisition and `releaseAll` convergence. The regular frontend build type-checks the renderer snapshot surface.
+
+The backend telemetry slices passed Tauri lockfile verification, rustfmt, Clippy, Rust tests and the integrated desktop smoke build before merge. The Canvas texture telemetry slice passed the regular frontend Vitest suite and TypeScript/Vite build before merge.
