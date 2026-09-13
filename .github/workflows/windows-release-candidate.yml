@@ -5,7 +5,6 @@ on:
   pull_request:
     paths:
       - .github/workflows/windows-release-candidate.yml
-      - docs/DESKTOP_ACCEPTANCE.md
 
 concurrency:
   group: windows-release-candidate-${{ github.ref }}
