@@ -1,8 +1,10 @@
+pub mod cache;
 pub mod classification;
 pub mod filesystem;
 pub mod metadata;
 pub mod thumbnail;
 
+pub use cache::{prune_disk_cache, DiskCachePolicy, DiskCachePruneReport};
 pub use filesystem::LocalFilesystemScanner;
 pub use metadata::{
     CachingVisualMetadataReader, HeaderVisualMetadataReader, InMemoryVisualMetadataCache,
