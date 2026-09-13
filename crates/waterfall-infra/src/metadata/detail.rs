@@ -405,8 +405,7 @@ fn decode_id3_text(data: &[u8]) -> Option<String> {
             let be = encoding == 2 || !(body.len() >= 2 && body[0] == 0xff && body[1] == 0xfe);
             let start = if encoding == 1
                 && body.len() >= 2
-                && ((body[0] == 0xff && body[1] == 0xfe)
-                    || (body[0] == 0xfe && body[1] == 0xff))
+                && ((body[0] == 0xff && body[1] == 0xfe) || (body[0] == 0xfe && body[1] == 0xff))
             {
                 2
             } else {
