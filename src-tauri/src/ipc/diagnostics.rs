@@ -1,9 +1,7 @@
 use serde::Serialize;
 use tauri::State;
 
-use crate::thumbnail_request::{
-    ThumbnailRequestRegistry, ThumbnailRequestTelemetrySnapshot,
-};
+use crate::thumbnail_request::{ThumbnailRequestRegistry, ThumbnailRequestTelemetrySnapshot};
 
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
