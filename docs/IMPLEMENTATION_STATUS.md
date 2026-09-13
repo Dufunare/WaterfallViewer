@@ -3,7 +3,7 @@
 > Status: Living implementation baseline
 > Architecture reference: [`ARCHITECTURE.md`](ARCHITECTURE.md) v0.3
 > Baseline date: 2026-09-13
-> Baseline commit: `7a4c37a` (`refactor(theme): establish semantic presentation tokens`)
+> Baseline commit: `0d50666` (`feat(metadata): add FLAC detail fast path`)
 
 This document records what the repository actually implements today. `ARCHITECTURE.md` remains the design rationale and long-term direction; when proven implementation choices differ from the original sketch, this document is the source of truth for current behavior until the architecture document is revised.
 
@@ -44,6 +44,7 @@ Media activation
   -> previous / next navigation
   -> active video/audio detail request through opaque resource key
   -> stale-safe preview metadata state
+  -> ISO-BMFF / WAV / ID3v2 / FLAC lightweight detail fast paths
   -> duration/codec plus supported audio title/artist display
 
 Platform input
@@ -65,7 +66,7 @@ Performance validation
   -> large-dataset bounded-work contract tests remain the hard CI gate
 ```
 
-The project is therefore best described as a **working desktop media-browsing core with validated Flow and Free Canvas architectures, an emerging cross-input boundary, and a concrete semantic theme boundary**, not as a foundation-only repository.
+The project is therefore best described as a **working desktop media-browsing core with validated Flow and Free Canvas architectures, an emerging cross-input boundary, a concrete semantic theme boundary, and progressively richer on-demand multimedia metadata**, not as a foundation-only repository.
 
 ## 2. Phase status against `ARCHITECTURE.md`
 
@@ -75,7 +76,7 @@ The project is therefore best described as a **working desktop media-browsing co
 | B. Streaming Image Browser | Complete | Tauri Channel streaming, session replacement/cancellation, incremental Masonry/Justified layout, viewport virtualization and DOM browsing are implemented. |
 | C. Resource Pipeline | Core complete | Thumbnail generation, opaque resource protocol, priority/deduplicating scheduler, persistent visual metadata cache, explicit representation leases, bounded thumbnail disk eviction and cooperative running-generation cancellation exist. Future representation kinds can reuse this lifecycle rather than requiring a new resource architecture. |
 | D. Free Canvas | Core complete | World-space scene, camera, spatial index, LOD policy, bounded viewport snapshots and PixiJS renderer are implemented and share the same media session/query/selection as Flow. |
-| E. Multimedia | Partial, materially advanced | Animated image, video and audio remain visible in browsing; explicit preview/playback exists; video dimensions have a container fast path. Video/audio details are loaded on demand outside the scan hot path and displayed in preview for supported metadata. Poster/cover representations and broader container/tag coverage remain. |
+| E. Multimedia | Partial, materially advanced | Animated image, video and audio remain visible in browsing; explicit preview/playback exists; video dimensions have a container fast path. Video/audio details are loaded on demand outside the scan hot path. Current lightweight detail coverage includes ISO-BMFF video metadata, WAV, ID3v2/MP3 identification and FLAC STREAMINFO/Vorbis Comment metadata. Poster/cover representations and broader container/tag coverage remain. |
 | F. Theme & Runtime Customization | Foundation established | Semantic palette/state/overlay/effect tokens now back the main Flow, Canvas and Preview visual surfaces. Runtime theme packs, user theme selection and optional effect modules are not yet implemented. |
 | G. Mobile Adapter | In progress | Desktop semantic input exists and Free Canvas accepts touch tap, one-finger pan and two-finger pan/pinch through the same semantic actions. Mobile source/resource adapters, mobile resource budgets and broader mobile interaction/UI adaptation remain. |
 
@@ -109,7 +110,9 @@ This cancellation is intentionally cooperative. Third-party decode/resize/encode
 
 ### 3.6 Rich multimedia metadata stays out of the scan hot path
 
-As of `22121d8`, richer video/audio details are requested only for an explicitly active media item. The request crosses the existing opaque resource boundary and uses lightweight container/tag parsing instead of playback decoding. Current supported fast paths include ISO-BMFF video duration/sample-entry codec, WAV duration/format and basic ID3v2 title/artist metadata.
+As of `22121d8`, richer video/audio details are requested only for an explicitly active media item. The request crosses the existing opaque resource boundary and uses lightweight container/tag parsing instead of playback decoding.
+
+As of `0d50666`, the current lightweight fast paths include ISO-BMFF video duration/sample-entry codec, WAV duration/format, ID3v2 title/artist plus MP3 identification, and FLAC STREAMINFO duration/codec plus bounded Vorbis Comment title/artist parsing. FLAC metadata blocks are bounded/skipped rather than decoded, and this work remains on-demand rather than part of recursive scanning.
 
 As of `ba9cb6e`, `PreviewMediaDetailController` observes activation as a sidecar rather than turning navigation into asynchronous state. It rejects stale results after rapid previous/next navigation and degrades metadata failures without affecting media playback. Image and animated-image activation does not trigger this detail I/O.
 
@@ -173,9 +176,9 @@ Cancellation alone did not justify adding abstraction for symmetry. Formalize a 
 
 ## 5. Current architecture debt and next priorities
 
-The resource pipeline's core lifecycle is closed for image thumbnails, on-demand multimedia metadata is live, desktop and touch Canvas input share a semantic boundary, shared media selection is concrete, the semantic theme boundary is established, and deterministic layout/query benchmarking exists. The next work should deepen media browsing and engineering validation rather than add abstraction solely for completeness.
+The resource pipeline's core lifecycle is closed for image thumbnails, on-demand multimedia metadata now covers several common audio/video formats, desktop and touch Canvas input share a semantic boundary, shared media selection is concrete, the semantic theme boundary is established, and deterministic layout/query benchmarking exists. The next work should deepen media browsing and engineering validation rather than add abstraction solely for completeness.
 
-1. **Poster/cover representations and broader multimedia coverage.** Generate low-cost video poster/audio cover representations through the existing resource lifecycle when a lightweight implementation is justified, and expand metadata coverage without moving full decoding into scan-time work. Do not introduce a heavyweight video decoder merely to satisfy the old architecture sketch.
+1. **Poster/cover representations and broader multimedia coverage.** Generate low-cost video poster/audio cover representations through the existing resource lifecycle when a lightweight implementation is justified, and continue expanding metadata coverage without moving full decoding into scan-time work. Do not introduce a heavyweight video decoder merely to satisfy the old architecture sketch.
 2. **Runtime themes/effects only after a concrete UX need.** The semantic override boundary now exists. Finish isolated remaining presentation literals opportunistically, but do not build a theme-pack/plugin system before there is a real product requirement.
 3. **I/O benchmarks, telemetry and E2E.** The deterministic in-memory layout/query benchmark harness exists, but representative filesystem scanning/metadata/thumbnail benchmark data, explicit memory/GPU/cache-hit telemetry and end-to-end interaction tests are still missing.
 4. **Broader mobile interaction parity.** Free Canvas touch navigation is implemented, but preview gestures/controls, mobile layout decisions and source-picking UX still need explicit platform work rather than implicit desktop reuse.
@@ -188,6 +191,7 @@ The repository embodies several performance rules from the architecture baseline
 
 - dimensions are read through metadata/header paths where possible rather than by full decode;
 - richer video/audio details are loaded only for active media and never added to recursive scan-time work;
+- FLAC detail parsing bounds comment buffering and skips unrelated metadata blocks rather than decoding media payloads;
 - stale async multimedia detail results cannot overwrite a newly activated preview;
 - media discovery is batched and streamed;
 - the frontend maintains indexed media lookup rather than repeated linear activation searches;
@@ -217,7 +221,7 @@ Pull-request CI classifies changed paths and runs only the relevant jobs. Depend
 
 The repository has extensive unit/contract coverage for scanning, metadata/cache behavior, query projection, Masonry/Justified layout, viewport virtualization, camera/spatial behavior, Canvas LOD/controller behavior, resource scheduling/leases/cancellation, renderer texture lifetime, workspace sharing, media activation/navigation, on-demand multimedia detail parsing, stale-safe preview detail loading, shared selection lifecycle and semantic input mapping.
 
-Selection tests cover replace/toggle behavior, primary selection, source/session invalidation, preservation across query projection changes and rejection of missing media. Desktop input tests cover click-to-select semantics and ensure drag/middle-button gestures do not accidentally select. Touch input tests cover tap selection, single-contact pan, two-contact midpoint pan/pinch, pinch-to-single-contact continuation, cancellation and contact-count bounds.
+FLAC parser tests cover STREAMINFO duration/codec, Vorbis Comment title/artist, non-FLAC input and malformed/truncated metadata. Selection tests cover replace/toggle behavior, primary selection, source/session invalidation, preservation across query projection changes and rejection of missing media. Desktop input tests cover click-to-select semantics and ensure drag/middle-button gestures do not accidentally select. Touch input tests cover tap selection, single-contact pan, two-contact midpoint pan/pinch, pinch-to-single-contact continuation, cancellation and contact-count bounds.
 
 A deterministic in-memory benchmark harness covers the major layout/query hot paths. `pnpm bench` runs streamed 10k construction/index benchmarks and prepared 50k visibility-query benchmarks, while normal frontend build type-checks the benchmark source. Large-dataset contract tests remain the merge-gating performance assertions.
 
