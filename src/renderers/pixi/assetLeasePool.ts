@@ -3,6 +3,12 @@ export interface AssetLeaseBackend<TAsset> {
   unload(key: string, asset: TAsset): Promise<void> | void;
 }
 
+export interface AssetLeasePoolTelemetrySnapshot {
+  entries: number;
+  totalRefs: number;
+  unloadingEntries: number;
+}
+
 interface LeaseEntry<TAsset> {
   refs: number;
   promise: Promise<TAsset>;
@@ -24,6 +30,22 @@ export class AssetLeasePool<TAsset> {
 
   refs(key: string): number {
     return this.#entries.get(key)?.refs ?? 0;
+  }
+
+  telemetrySnapshot(): AssetLeasePoolTelemetrySnapshot {
+    let totalRefs = 0;
+    let unloadingEntries = 0;
+    for (const entry of this.#entries.values()) {
+      totalRefs += entry.refs;
+      if (entry.unloading !== null) {
+        unloadingEntries += 1;
+      }
+    }
+    return {
+      entries: this.#entries.size,
+      totalRefs,
+      unloadingEntries,
+    };
   }
 
   acquire(key: string): Promise<TAsset> {

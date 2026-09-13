@@ -59,6 +59,11 @@ describe("AssetLeasePool", () => {
     const first = pool.acquire("image-a");
     const second = pool.acquire("image-a");
     expect(pool.refs("image-a")).toBe(2);
+    expect(pool.telemetrySnapshot()).toEqual({
+      entries: 1,
+      totalRefs: 2,
+      unloadingEntries: 0,
+    });
     expect(await first).toBe(await second);
     expect(backend.loads).toEqual(["image-a"]);
 
@@ -66,11 +71,26 @@ describe("AssetLeasePool", () => {
     await flushMicrotasks();
     expect(backend.unloads).toEqual([]);
     expect(pool.refs("image-a")).toBe(1);
+    expect(pool.telemetrySnapshot()).toEqual({
+      entries: 1,
+      totalRefs: 1,
+      unloadingEntries: 0,
+    });
 
     expect(pool.release("image-a")).toBe(true);
+    expect(pool.telemetrySnapshot()).toEqual({
+      entries: 1,
+      totalRefs: 0,
+      unloadingEntries: 1,
+    });
     await flushMicrotasks();
     expect(backend.unloads).toHaveLength(1);
     expect(pool.size).toBe(0);
+    expect(pool.telemetrySnapshot()).toEqual({
+      entries: 0,
+      totalRefs: 0,
+      unloadingEntries: 0,
+    });
   });
 
   it("releases an asset that finishes loading after its last consumer left", async () => {
@@ -81,6 +101,11 @@ describe("AssetLeasePool", () => {
     await flushMicrotasks();
     expect(backend.loads).toHaveLength(1);
     expect(pool.release("slow-image")).toBe(true);
+    expect(pool.telemetrySnapshot()).toEqual({
+      entries: 1,
+      totalRefs: 0,
+      unloadingEntries: 1,
+    });
 
     const asset = { key: "slow-image", generation: 1 };
     backend.loads[0].resolve(asset);
@@ -101,6 +126,11 @@ describe("AssetLeasePool", () => {
     const second = pool.acquire("image-a");
 
     expect(backend.loads).toHaveLength(1);
+    expect(pool.telemetrySnapshot()).toEqual({
+      entries: 1,
+      totalRefs: 1,
+      unloadingEntries: 0,
+    });
     const firstAsset = { key: "image-a", generation: 1 };
     backend.loads[0].resolve(firstAsset);
     await expect(first).resolves.toEqual(firstAsset);
@@ -127,7 +157,17 @@ describe("AssetLeasePool", () => {
       pool.acquire("a"),
       pool.acquire("b"),
     ]);
+    expect(pool.telemetrySnapshot()).toEqual({
+      entries: 2,
+      totalRefs: 3,
+      unloadingEntries: 0,
+    });
     pool.releaseAll();
+    expect(pool.telemetrySnapshot()).toEqual({
+      entries: 2,
+      totalRefs: 0,
+      unloadingEntries: 2,
+    });
     await flushMicrotasks();
 
     expect(pool.size).toBe(0);
