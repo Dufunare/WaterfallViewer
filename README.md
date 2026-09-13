@@ -8,7 +8,7 @@ WaterfallViewer is a local-first, session-oriented multimedia browser for recurs
 
 The long-term architecture and design rationale are documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-The repository's current, validated implementation baseline and known architecture debt are tracked separately in [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md). Runtime telemetry and viewer/E2E evolution are recorded in [`docs/THUMBNAIL_CACHE_TELEMETRY.md`](docs/THUMBNAIL_CACHE_TELEMETRY.md) and [`docs/VIEWER_RUNTIME_E2E_BASELINE.md`](docs/VIEWER_RUNTIME_E2E_BASELINE.md). Desktop 1.0 native release acceptance is defined in [`docs/DESKTOP_ACCEPTANCE.md`](docs/DESKTOP_ACCEPTANCE.md).
+The repository's current, validated implementation baseline and known architecture debt are tracked separately in [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md). Runtime telemetry and viewer/E2E evolution are recorded in [`docs/THUMBNAIL_CACHE_TELEMETRY.md`](docs/THUMBNAIL_CACHE_TELEMETRY.md) and [`docs/VIEWER_RUNTIME_E2E_BASELINE.md`](docs/VIEWER_RUNTIME_E2E_BASELINE.md). Desktop 1.0 native release acceptance is defined in [`docs/DESKTOP_ACCEPTANCE.md`](docs/DESKTOP_ACCEPTANCE.md), with a reusable candidate record in [`docs/DESKTOP_ACCEPTANCE_RECORD_TEMPLATE.md`](docs/DESKTOP_ACCEPTANCE_RECORD_TEMPLATE.md). Real-corpus performance evidence is documented in [`docs/REAL_CORPUS_BASELINE.md`](docs/REAL_CORPUS_BASELINE.md).
 
 The Rust foundation remains intentionally split from Tauri:
 
@@ -36,10 +36,13 @@ The current desktop baseline includes:
 - semantic desktop input plus touch pan/pinch/tap handling for Free Canvas;
 - semantic theme tokens for the main Flow, Canvas and Preview surfaces;
 - deterministic 10k/50k frontend benchmarks plus real-corpus scan/detail/thumbnail benchmark entry points;
+- a PowerShell real-corpus baseline runner that captures environment metadata and raw production-path benchmark evidence without turning machine-dependent timings into CI thresholds;
 - read-only runtime telemetry for thumbnail cache/request state, media-resource registrations and Canvas texture leases;
 - deterministic Chromium Playwright coverage for the main browser-facing viewer workflow;
-- selective CI with Linux and Windows integrated Tauri `--no-bundle` smoke builds;
-- an explicit Windows x64 NSIS release-candidate workflow with SHA-256 artifact verification.
+- selective CI with Linux and Windows integrated Tauri `--no-bundle` smoke builds plus Windows PowerShell script syntax validation;
+- an explicit Windows x64 NSIS release-candidate workflow with SHA-256 artifact verification;
+- native release-executable startup smoke on a Windows runner;
+- automated NSIS package lifecycle smoke covering silent install to an isolated directory, installed-path startup, silent uninstall and removal of the installed application binary.
 
 ## Development
 
@@ -72,17 +75,23 @@ Integrated desktop compile smoke:
 pnpm tauri build --no-bundle --ci
 ```
 
+Representative real-corpus capture on Windows/PowerShell:
+
+```powershell
+./scripts/run-real-corpus-baseline.ps1 -MediaRoot "D:\Media\AcceptanceCorpus"
+```
+
 The browser E2E suite uses `e2e.html` and a deterministic seeded platform fixture while preserving the production `createViewerRuntime(...)` composition. CI currently installs the pinned Playwright test tool separately from the frozen application dependency graph; see [`docs/VIEWER_RUNTIME_E2E_BASELINE.md`](docs/VIEWER_RUNTIME_E2E_BASELINE.md) for the exact boundary.
 
 ## Current development focus
 
-WaterfallViewer is now in **Desktop 1.0 native validation and release preparation**, not core-foundation development. The difficult browsing architecture paths—streaming discovery, virtualized Flow, bounded Free Canvas rendering, explicit resource lifetimes, multimedia preview, shared selection/input, telemetry, browser main-flow E2E and Windows release-candidate packaging—are already established.
+WaterfallViewer is now in **Desktop 1.0 native validation and release preparation**, not core-foundation development. The difficult browsing architecture paths—streaming discovery, virtualized Flow, bounded Free Canvas rendering, explicit resource lifetimes, multimedia preview, shared selection/input, telemetry, browser main-flow E2E, Windows release-candidate packaging, direct native startup and installed-package lifecycle smoke—are already established.
 
 The highest-value remaining desktop work is to:
 
-1. validate native desktop behavior that browser E2E cannot prove, especially source picking, real filesystem traversal, Tauri IPC/custom-protocol media delivery and packaged startup;
-2. record representative real-corpus benchmark/telemetry acceptance baselines and long-session resource convergence;
-3. finish product/release polish such as naming/window metadata, versioning, signing policy when available, installer/release notes and final acceptance records;
+1. complete interactive native acceptance that headless/build automation still cannot prove, especially the real directory picker, recursive traversal/permissions through the packaged WebView session, Tauri Channel/custom-protocol media delivery and seek behavior, normal GUI shutdown and second launch;
+2. capture representative real-corpus benchmark evidence and long-session runtime-telemetry convergence on a controlled local corpus using the repository's acceptance record rather than inventing hosted-runner timing thresholds;
+3. finish release policy work that requires explicit product decisions or external credentials, especially versioning/release notes, upgrade acceptance and code signing when keys/policy are available;
 4. extend multimedia representation coverage only where it provides concrete product value without destabilizing the current resource pipeline.
 
 Poster/cover generation, runtime theme packs, deep GPU/VRAM telemetry and mobile adapters remain valid future work, but they are not prerequisites for proving the current desktop browsing core. In particular, the project should not add a heavyweight video decoder solely to manufacture poster thumbnails for architectural symmetry.
