@@ -4,6 +4,7 @@ mod flac;
 mod header;
 mod isobmff_audio;
 mod media_detail;
+mod ogg;
 mod sqlite;
 mod video;
 
