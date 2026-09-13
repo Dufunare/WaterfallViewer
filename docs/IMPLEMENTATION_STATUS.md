@@ -3,7 +3,7 @@
 > Status: Living implementation baseline
 > Architecture reference: [`ARCHITECTURE.md`](ARCHITECTURE.md) v0.3
 > Baseline date: 2026-09-13
-> Baseline commit: `ad07866` (`feat(resources): cancel orphaned thumbnail generation`)
+> Baseline commit: `ba9cb6e` (`feat(viewer): show on-demand multimedia details in preview`)
 
 This document records what the repository actually implements today. `ARCHITECTURE.md` remains the design rationale and long-term direction; when proven implementation choices differ from the original sketch, this document is the source of truth for current behavior until the architecture document is revised.
 
@@ -36,6 +36,9 @@ Opaque media resource protocol
 Media activation
   -> image / animated image / video / audio preview
   -> previous / next navigation
+  -> active video/audio detail request through opaque resource key
+  -> stale-safe preview metadata state
+  -> duration/codec plus supported audio title/artist display
 ```
 
 The project is therefore best described as a **working desktop media-browsing core with validated Flow and Free Canvas architectures**, not as a foundation-only repository.
@@ -48,7 +51,7 @@ The project is therefore best described as a **working desktop media-browsing co
 | B. Streaming Image Browser | Complete | Tauri Channel streaming, session replacement/cancellation, incremental Masonry/Justified layout, viewport virtualization and DOM browsing are implemented. |
 | C. Resource Pipeline | Core complete | Thumbnail generation, opaque resource protocol, priority/deduplicating scheduler, persistent visual metadata cache, explicit representation leases, bounded thumbnail disk eviction and cooperative running-generation cancellation exist. Future representation kinds can reuse this lifecycle rather than requiring a new resource architecture. |
 | D. Free Canvas | Core complete | World-space scene, camera, spatial index, LOD policy, bounded viewport snapshots and PixiJS renderer are implemented and share the same media session/query as Flow. |
-| E. Multimedia | Partial | Animated image, video and audio remain visible in browsing; explicit preview/playback exists; video dimensions have a container metadata fast path. Rich video/audio details, posters and covers remain. |
+| E. Multimedia | Partial, materially advanced | Animated image, video and audio remain visible in browsing; explicit preview/playback exists; video dimensions have a container fast path. Video/audio details are now loaded on demand outside the scan hot path and displayed in preview for supported metadata. Poster/cover representations and broader container/tag coverage remain. |
 | F. Theme & Runtime Customization | Early | A small CSS-variable base exists, but formal token families, theme packs and optional visual-effect modules are not yet implemented. |
 | G. Mobile Adapter | Not started | Core boundaries remain mobile-oriented, but mobile source adapters, touch input mapping and mobile resource budgets are not implemented. |
 
@@ -82,6 +85,12 @@ As of `ad07866`, the scheduler also owns backend-work interest. One shared consu
 
 This cancellation is intentionally cooperative. Third-party decode/resize/encode calls are not forcibly interrupted mid-call; cancellation is observed at the next safe pipeline boundary.
 
+### 3.6 Rich multimedia metadata stays out of the scan hot path
+
+As of `22121d8`, richer video/audio details are requested only for an explicitly active media item. The request crosses the existing opaque resource boundary and uses lightweight container/tag parsing instead of playback decoding. Current supported fast paths include ISO-BMFF video duration/sample-entry codec, WAV duration/format and basic ID3v2 title/artist metadata.
+
+As of `ba9cb6e`, `PreviewMediaDetailController` observes activation as a sidecar rather than turning navigation into asynchronous state. It rejects stale results after rapid previous/next navigation and degrades metadata failures without affecting media playback. Image and animated-image activation does not trigger this detail I/O.
+
 ## 4. Intentional deviations from the original sketch
 
 These are not treated as regressions. They reflect implementation experience and should normally be documented rather than mechanically rewritten to match the earlier diagram.
@@ -114,9 +123,9 @@ Cancellation alone did not justify adding abstraction for symmetry. Formalize a 
 
 ## 5. Current architecture debt and next priorities
 
-The resource pipeline's core lifecycle is now closed for image thumbnails. The next work should deepen media browsing rather than add abstraction solely for completeness.
+The resource pipeline's core lifecycle is closed for image thumbnails, and the first on-demand multimedia metadata path is now live. The next work should deepen media browsing rather than add abstraction solely for completeness.
 
-1. **Multimedia detail representations.** Add richer video/audio metadata and poster/cover generation without making full playback decoding part of scan-time work.
+1. **Poster/cover representations and broader multimedia coverage.** Generate low-cost video poster/audio cover representations through the existing resource lifecycle, and expand metadata coverage where useful without moving full decoding into scan-time work.
 2. **Selection model.** Selection remains intentionally absent from the current browsing core even though it was present in the original session sketch.
 3. **Input abstraction.** Desktop pointer/keyboard handling still reaches presentation/controller code directly. Introduce semantic `Pan`, `Zoom`, `Activate`, `Back`, `Next`, `Previous`, `Select` mapping before mobile work expands.
 4. **Theme/effect boundary.** Replace remaining hard-coded presentation values with coherent design tokens, then add runtime themes/effects only after functional behavior is stable.
@@ -128,6 +137,8 @@ The resource pipeline's core lifecycle is now closed for image thumbnails. The n
 The repository already embodies several performance rules from the architecture baseline:
 
 - dimensions are read through metadata/header paths where possible rather than by full decode;
+- richer video/audio details are loaded only for active media and never added to recursive scan-time work;
+- stale async multimedia detail results cannot overwrite a newly activated preview;
 - media discovery is batched and streamed;
 - the frontend maintains indexed media lookup rather than repeated linear activation searches;
 - non-source sorting is deferred until scan termination to avoid repeated global re-sorts while batches arrive;
@@ -151,7 +162,7 @@ Pull-request CI classifies changed paths and runs only the relevant jobs. Depend
 - Tauri lockfile verification, fmt, Clippy and tests;
 - integrated desktop `tauri build --no-bundle --ci` smoke build.
 
-The repository has extensive unit/contract coverage for scanning, metadata/cache behavior, query projection, Masonry/Justified layout, viewport virtualization, camera/spatial behavior, Canvas LOD/controller behavior, resource scheduling/leases/cancellation, renderer texture lifetime, workspace sharing, media activation and preview navigation.
+The repository has extensive unit/contract coverage for scanning, metadata/cache behavior, query projection, Masonry/Justified layout, viewport virtualization, camera/spatial behavior, Canvas LOD/controller behavior, resource scheduling/leases/cancellation, renderer texture lifetime, workspace sharing, media activation/navigation, on-demand multimedia detail parsing and stale-safe preview detail loading.
 
 Still missing as formal engineering capabilities:
 
