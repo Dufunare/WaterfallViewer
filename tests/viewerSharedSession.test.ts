@@ -160,7 +160,7 @@ describe("shared viewer workspace integration", () => {
       itemCount: 3,
     });
     expect(runtime.sessionController.current?.id).toBe("session-1");
-    expect(runtime.query.snapshot.itemCount).toBe(3);
+    expect(runtime.query.snapshot.matchedItemCount).toBe(3);
     expect(runtime.flowBrowser.snapshot.sessionId).toBe("session-1");
     expect(runtime.flowBrowser.snapshot.itemCount).toBe(3);
     expect(canvas.snapshot.sessionId).toBe("session-1");
