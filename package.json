@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
-    "test": "vitest run",
+    "test": "vitest run tests",
     "bench": "vitest bench --run benchmarks",
     "preview": "vite preview",
     "tauri": "tauri"
