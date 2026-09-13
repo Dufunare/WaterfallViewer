@@ -145,7 +145,10 @@ fn main() {
         .collect();
     let total = median_sample(&total_samples);
     println!("\noverall median:");
-    println!("  elapsed: {:>9.3} ms", total.elapsed.as_secs_f64() * 1_000.0);
+    println!(
+        "  elapsed: {:>9.3} ms",
+        total.elapsed.as_secs_f64() * 1_000.0
+    );
     println!(
         "  counts: attempted={} detailed={} unsupported={} errors={}",
         total.counts.attempted,
