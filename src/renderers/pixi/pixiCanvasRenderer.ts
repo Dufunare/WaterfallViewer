@@ -27,6 +27,14 @@ export interface PixiCanvasRendererOptions {
   powerPreference?: "high-performance" | "low-power";
 }
 
+export interface PixiCanvasRendererTelemetrySnapshot {
+  initialized: boolean;
+  renderedItems: number;
+  textureEntries: number;
+  textureRefs: number;
+  unloadingTextureEntries: number;
+}
+
 /**
  * Thin PixiJS adapter over `CanvasBrowserSnapshot`.
  *
@@ -56,6 +64,17 @@ export class PixiCanvasRenderer {
 
   get renderedItemCount(): number {
     return this.#records.size;
+  }
+
+  telemetrySnapshot(): PixiCanvasRendererTelemetrySnapshot {
+    const textures = this.#textures.telemetrySnapshot();
+    return {
+      initialized: this.initialized,
+      renderedItems: this.#records.size,
+      textureEntries: textures.entries,
+      textureRefs: textures.totalRefs,
+      unloadingTextureEntries: textures.unloadingEntries,
+    };
   }
 
   async init(host: HTMLElement): Promise<void> {
