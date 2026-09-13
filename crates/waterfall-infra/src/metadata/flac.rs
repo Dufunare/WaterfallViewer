@@ -12,8 +12,9 @@ const STREAMINFO_BYTES: usize = 34;
 pub(super) fn read_flac_detail_file(
     locator: &str,
 ) -> Result<Option<AudioDetail>, MetadataReadFailure> {
-    let mut file = File::open(locator)
-        .map_err(|error| MetadataReadFailure::new(format!("failed to open audio detail: {error}")))?;
+    let mut file = File::open(locator).map_err(|error| {
+        MetadataReadFailure::new(format!("failed to open audio detail: {error}"))
+    })?;
     read_flac_detail(&mut file)
         .map_err(|error| MetadataReadFailure::new(format!("failed to read FLAC detail: {error}")))
 }
@@ -55,9 +56,14 @@ fn read_flac_detail<R: Read + Seek>(reader: &mut R) -> io::Result<Option<AudioDe
                 read_vorbis_comments(&body, &mut detail);
             }
             _ => {
-                reader.seek(SeekFrom::Current(i64::try_from(block_len).map_err(|_| {
-                    io::Error::new(io::ErrorKind::InvalidData, "FLAC metadata block is too large")
-                })?))?;
+                reader.seek(SeekFrom::Current(i64::try_from(block_len).map_err(
+                    |_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "FLAC metadata block is too large",
+                        )
+                    },
+                )?))?;
             }
         }
 
@@ -89,7 +95,10 @@ fn read_streaminfo<R: Read + Seek>(
     if block_len > STREAMINFO_BYTES as u64 {
         reader.seek(SeekFrom::Current(
             i64::try_from(block_len - STREAMINFO_BYTES as u64).map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidData, "FLAC STREAMINFO block is too large")
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "FLAC STREAMINFO block is too large",
+                )
             })?,
         ))?;
     }
@@ -204,7 +213,7 @@ mod tests {
     }
 
     #[test]
-    fn tolerates_truncated_vorbis_comments_without_losing_streaminfo() {
+    fn rejects_truncated_vorbis_comments() {
         let mut data = flac_fixture(48_000, 48_000, &["TITLE=Complete"]);
         data.truncate(data.len() - 3);
 
