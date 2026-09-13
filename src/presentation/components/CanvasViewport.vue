@@ -19,6 +19,7 @@ import {
 } from "../../platform/input/desktopCanvasInput";
 import type { ViewerInputAction } from "../../platform/input/actions";
 import { PixiCanvasRenderer } from "../../renderers/pixi/pixiCanvasRenderer";
+import { useMediaSelection } from "../selectionContext";
 
 const props = defineProps<{
   createBrowser: () => CanvasBrowserController;
@@ -27,21 +28,36 @@ const emit = defineEmits<{
   activate: [mediaId: string];
 }>();
 
+const selection = useMediaSelection();
 const host = ref<HTMLElement | null>(null);
 const browser = markRaw(props.createBrowser());
 const renderer = markRaw(new PixiCanvasRenderer());
 const input = markRaw(new DesktopCanvasInputAdapter());
 const snapshot = shallowRef<CanvasBrowserSnapshot>(browser.snapshot);
+const selectionSnapshot = shallowRef(selection.snapshot);
 const rendererError = ref<string | null>(null);
 const dragging = ref(false);
 
 let unsubscribe: (() => void) | null = null;
+let unsubscribeSelection: (() => void) | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let resizeFrame: number | null = null;
 let disposed = false;
 
 const zoomLabel = computed(() => `${Math.round(snapshot.value.camera.zoom * 100)}%`);
 const canFit = computed(() => snapshot.value.itemCount > 0);
+const selectedItems = computed(() => {
+  const selectedIds = new Set(selectionSnapshot.value.selectedIds);
+  return snapshot.value.items.filter((item) => selectedIds.has(item.mediaId));
+});
+
+function selectionStyle(item: CanvasBrowserSnapshot["items"][number]): Record<string, string> {
+  return {
+    width: `${item.screenRect.width}px`,
+    height: `${item.screenRect.height}px`,
+    transform: `translate3d(${item.screenRect.x}px, ${item.screenRect.y}px, 0)`,
+  };
+}
 
 function scheduleViewportSync(): void {
   if (resizeFrame !== null) {
@@ -84,14 +100,26 @@ function onPointerMove(event: PointerEvent): void {
   dispatchInputAction(input.movePointer(event));
 }
 
-function endPointer(event: PointerEvent): void {
-  if (!input.endPointer(event.pointerId)) {
+function onPointerUp(event: PointerEvent): void {
+  const bounds = hostBounds();
+  if (bounds !== null) {
+    dispatchInputAction(input.selectionOnPointerUp(event, bounds));
+  }
+  finishPointer(event.pointerId);
+}
+
+function onPointerCancel(event: PointerEvent): void {
+  finishPointer(event.pointerId);
+}
+
+function finishPointer(pointerId: number): void {
+  if (!input.endPointer(pointerId)) {
     return;
   }
 
   const element = host.value;
-  if (element?.hasPointerCapture(event.pointerId)) {
-    element.releasePointerCapture(event.pointerId);
+  if (element?.hasPointerCapture(pointerId)) {
+    element.releasePointerCapture(pointerId);
   }
   dragging.value = false;
 }
@@ -128,6 +156,21 @@ function dispatchInputAction(action: ViewerInputAction | null): void {
       const item = hitTestCanvasItems(snapshot.value.items, action.point);
       if (item !== null) {
         emit("activate", item.mediaId);
+      }
+      break;
+    }
+    case "select-at": {
+      const item = hitTestCanvasItems(snapshot.value.items, action.point);
+      if (item === null) {
+        if (action.mode === "replace") {
+          selection.clear();
+        }
+        break;
+      }
+      if (action.mode === "toggle") {
+        selection.toggle(item.mediaId);
+      } else {
+        selection.replace(item.mediaId);
       }
       break;
     }
@@ -177,6 +220,9 @@ onMounted(async () => {
       renderer.update(nextSnapshot);
     }
   });
+  unsubscribeSelection = selection.subscribe((nextSnapshot) => {
+    selectionSnapshot.value = nextSnapshot;
+  });
 
   const element = host.value;
   if (element === null) {
@@ -204,6 +250,7 @@ onBeforeUnmount(() => {
   disposed = true;
   input.reset();
   unsubscribe?.();
+  unsubscribeSelection?.();
   resizeObserver?.disconnect();
   if (resizeFrame !== null) {
     window.cancelAnimationFrame(resizeFrame);
@@ -221,11 +268,19 @@ onBeforeUnmount(() => {
     aria-label="Free canvas media browser"
     @pointerdown="onPointerDown"
     @pointermove="onPointerMove"
-    @pointerup="endPointer"
-    @pointercancel="endPointer"
+    @pointerup="onPointerUp"
+    @pointercancel="onPointerCancel"
     @wheel.prevent="onWheel"
     @dblclick="onDoubleClick"
   >
+    <div
+      v-for="item in selectedItems"
+      :key="item.mediaId"
+      class="selection-outline"
+      :style="selectionStyle(item)"
+      aria-hidden="true"
+    />
+
     <div class="canvas-hud">
       <span class="zoom-label">{{ zoomLabel }}</span>
       <button
@@ -262,6 +317,16 @@ onBeforeUnmount(() => {
 
 .canvas-viewport.dragging {
   cursor: grabbing;
+}
+
+.selection-outline {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  left: 0;
+  border: 2px solid var(--wf-accent);
+  pointer-events: none;
+  contain: layout paint style;
 }
 
 .canvas-hud {
