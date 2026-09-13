@@ -50,8 +50,9 @@ function Invoke-CargoBenchmark {
 
     Write-Host "Running $Example..."
     & cargo @cargoArgs 2>&1 | Tee-Object -FilePath $OutputFile
-    if ($LASTEXITCODE -ne 0) {
-        throw "$Example failed with exit code $LASTEXITCODE. See $OutputFile"
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+        throw "$Example failed with exit code $exitCode. See $OutputFile"
     }
 }
 
@@ -100,18 +101,9 @@ Keep storage type, power mode, thermal conditions and major corpus changes compa
 using two captures for before/after performance decisions.
 "@ | Set-Content -Encoding utf8 (Join-Path $outputDir "environment.txt")
 
-Invoke-CargoBenchmark \
-    -Example "scan_bench" \
-    -OutputFile (Join-Path $outputDir "scan-bench.txt")
-
-Invoke-CargoBenchmark \
-    -Example "media_detail_bench" \
-    -OutputFile (Join-Path $outputDir "media-detail-bench.txt")
-
-Invoke-CargoBenchmark \
-    -Example "thumbnail_bench" \
-    -OutputFile (Join-Path $outputDir "thumbnail-bench.txt") \
-    -ExtraArgs @("--max-edge", $MaxEdge)
+Invoke-CargoBenchmark -Example "scan_bench" -OutputFile (Join-Path $outputDir "scan-bench.txt")
+Invoke-CargoBenchmark -Example "media_detail_bench" -OutputFile (Join-Path $outputDir "media-detail-bench.txt")
+Invoke-CargoBenchmark -Example "thumbnail_bench" -OutputFile (Join-Path $outputDir "thumbnail-bench.txt") -ExtraArgs @("--max-edge", $MaxEdge)
 
 Write-Host ""
 Write-Host "Real-corpus baseline captured at: $outputDir"
