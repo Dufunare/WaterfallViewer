@@ -107,4 +107,54 @@ describe("RepresentationScheduler explicit promotion", () => {
     port.resolve(0);
     await request;
   });
+
+  it("limits background work so visible requests keep reserved capacity", async () => {
+    const port = new ControlledPort();
+    const scheduler = new RepresentationScheduler(port, {
+      maxConcurrent: 3,
+      maxBackgroundConcurrent: 1,
+    });
+
+    const firstBackground = scheduler.requestThumbnail({
+      resourceKey: "background-1",
+      maxEdge: 256,
+      priority: "prefetch",
+    });
+    const secondBackground = scheduler.requestThumbnail({
+      resourceKey: "background-2",
+      maxEdge: 256,
+      priority: "overscan",
+    });
+    const visibleA = scheduler.requestThumbnail({
+      resourceKey: "visible-a",
+      maxEdge: 256,
+      priority: "visible",
+    });
+    const visibleB = scheduler.requestThumbnail({
+      resourceKey: "visible-b",
+      maxEdge: 256,
+      priority: "visible",
+    });
+    await flushMicrotasks();
+
+    expect(port.calls.map((call) => call.resourceKey)).toEqual([
+      "background-1",
+      "visible-a",
+      "visible-b",
+    ]);
+    expect(port.calls.some((call) => call.resourceKey === "background-2")).toBe(false);
+
+    port.resolve(1);
+    port.resolve(2);
+    await Promise.all([visibleA, visibleB]);
+    await flushMicrotasks();
+    expect(port.calls.some((call) => call.resourceKey === "background-2")).toBe(false);
+
+    port.resolve(0);
+    await firstBackground;
+    await flushMicrotasks();
+    expect(port.calls[3].resourceKey).toBe("background-2");
+    port.resolve(3);
+    await secondBackground;
+  });
 });
