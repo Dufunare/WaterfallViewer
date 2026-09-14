@@ -234,11 +234,9 @@ fn generate_thumbnail_representation(
         RepresentationCommandError::unavailable("resource key is not active or registered")
     })?;
 
-    if let Some(representation) = direct_source_representation(
-        &source,
-        &resource_key,
-        &cancellation,
-    )? {
+    if let Some(representation) =
+        direct_source_representation(&source, &resource_key, &cancellation)?
+    {
         return Ok(representation);
     }
 
@@ -247,18 +245,12 @@ fn generate_thumbnail_representation(
     let newly_generated = !cache_path.exists();
     let thumbnailer = ImageThumbnailer;
     let info = match encoding {
-        ThumbnailCacheEncoding::Jpeg => thumbnailer.ensure_jpeg_cancellable(
-            &source,
-            &cache_path,
-            spec,
-            &cancellation,
-        ),
-        ThumbnailCacheEncoding::Png => thumbnailer.ensure_png_cancellable(
-            &source,
-            &cache_path,
-            spec,
-            &cancellation,
-        ),
+        ThumbnailCacheEncoding::Jpeg => {
+            thumbnailer.ensure_jpeg_cancellable(&source, &cache_path, spec, &cancellation)
+        }
+        ThumbnailCacheEncoding::Png => {
+            thumbnailer.ensure_png_cancellable(&source, &cache_path, spec, &cancellation)
+        }
     }
     .map_err(map_thumbnail_error)?;
     if cancellation.is_cancelled() {
@@ -441,34 +433,25 @@ mod tests {
         fs::write(&source, b"abc").unwrap();
         let encoding = thumbnail_cache_encoding(&source);
 
-        let first = thumbnail_cache_path(
-            &cache,
-            &source,
-            ThumbnailSpec::new(256).unwrap(),
-            encoding,
-        )
-        .unwrap();
-        let other_edge = thumbnail_cache_path(
-            &cache,
-            &source,
-            ThumbnailSpec::new(512).unwrap(),
-            encoding,
-        )
-        .unwrap();
+        let first =
+            thumbnail_cache_path(&cache, &source, ThumbnailSpec::new(256).unwrap(), encoding)
+                .unwrap();
+        let other_edge =
+            thumbnail_cache_path(&cache, &source, ThumbnailSpec::new(512).unwrap(), encoding)
+                .unwrap();
         assert_ne!(first, other_edge);
 
         let mut file = fs::OpenOptions::new().append(true).open(&source).unwrap();
         file.write_all(b"def").unwrap();
         file.sync_all().unwrap();
-        let changed = thumbnail_cache_path(
-            &cache,
-            &source,
-            ThumbnailSpec::new(256).unwrap(),
-            encoding,
-        )
-        .unwrap();
+        let changed =
+            thumbnail_cache_path(&cache, &source, ThumbnailSpec::new(256).unwrap(), encoding)
+                .unwrap();
         assert_ne!(first, changed);
-        assert_eq!(first.extension().and_then(|value| value.to_str()), Some("jpg"));
+        assert_eq!(
+            first.extension().and_then(|value| value.to_str()),
+            Some("jpg")
+        );
     }
 
     #[test]
@@ -483,6 +466,9 @@ mod tests {
             thumbnail_cache_encoding(&source),
         )
         .unwrap();
-        assert_eq!(path.extension().and_then(|value| value.to_str()), Some("png"));
+        assert_eq!(
+            path.extension().and_then(|value| value.to_str()),
+            Some("png")
+        );
     }
 }
