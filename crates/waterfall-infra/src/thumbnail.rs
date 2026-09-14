@@ -100,6 +100,10 @@ enum ThumbnailEncoding {
 }
 
 impl ImageThumbnailer {
+    pub fn source_dimensions(&self, source: &Path) -> Result<ThumbnailInfo, ThumbnailError> {
+        dimensions_of(source)
+    }
+
     pub fn ensure_png(
         &self,
         source: &Path,
@@ -287,6 +291,23 @@ mod tests {
     use super::*;
     use image::{ImageBuffer, Rgb, Rgba};
     use tempfile::tempdir;
+
+    #[test]
+    fn reads_source_dimensions_without_generating_a_thumbnail() {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("source.png");
+        ImageBuffer::from_pixel(320, 180, Rgba([1_u8, 2, 3, 255]))
+            .save(&source)
+            .unwrap();
+
+        assert_eq!(
+            ImageThumbnailer.source_dimensions(&source).unwrap(),
+            ThumbnailInfo {
+                width: 320,
+                height: 180
+            }
+        );
+    }
 
     #[test]
     fn generates_aspect_preserving_png_thumbnail() {
