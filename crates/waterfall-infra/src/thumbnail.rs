@@ -224,12 +224,11 @@ impl ImageThumbnailer {
             ThumbnailEncoding::Png => thumbnail
                 .write_to(&mut encoded, ImageFormat::Png)
                 .map_err(|error| ThumbnailError::Decode(error.to_string()))?,
-            ThumbnailEncoding::Jpeg => JpegEncoder::new_with_quality(
-                &mut encoded,
-                JPEG_THUMBNAIL_QUALITY,
-            )
-            .encode_image(&thumbnail)
-            .map_err(|error| ThumbnailError::Decode(error.to_string()))?,
+            ThumbnailEncoding::Jpeg => {
+                JpegEncoder::new_with_quality(&mut encoded, JPEG_THUMBNAIL_QUALITY)
+                    .encode_image(&thumbnail)
+                    .map_err(|error| ThumbnailError::Decode(error.to_string()))?
+            }
         }
         cancellation.check()?;
 
