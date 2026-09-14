@@ -73,12 +73,20 @@ export function createViewerRuntime(
     activation,
     ports.detail,
   );
-  const flowBrowser = new MediaBrowserController({
-    sessionController,
-    sourcePicker: ports.sourcePicker,
-    representationScheduler,
-    resourcePort: ports.resource,
-  });
+  const flowBrowser = new MediaBrowserController(
+    {
+      sessionController,
+      sourcePicker: ports.sourcePicker,
+      representationScheduler,
+      resourcePort: ports.resource,
+    },
+    {
+      // Flow tiles are an overview surface, not a full-resolution preview.
+      // Bounding their representation edge keeps high-DPI and tall-image
+      // browsing from decoding substantially more pixels than the UI can show.
+      maxThumbnailEdge: 768,
+    },
+  );
   const canvasScene = new CanvasSceneModel({
     atlas: {
       worldWidth: 4096,
