@@ -572,5 +572,8 @@ function comesBefore(left: QueueEntry, right: QueueEntry): boolean {
   if (left.rank !== right.rank) {
     return left.rank > right.rank;
   }
-  return left.sequence < right.sequence;
+  // During active scrolling, the newest demand is the best approximation of
+  // the current viewport. Once scrolling stops no newer work arrives, so older
+  // jobs naturally drain without starvation.
+  return left.sequence > right.sequence;
 }
