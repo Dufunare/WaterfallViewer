@@ -54,7 +54,10 @@ interface QueueEntry {
   sequence: number;
 }
 
-const DEFAULT_MAX_CONCURRENT = 6;
+// Thumbnail generation is currently CPU-heavy (decode + resize + encode). Keep
+// the default deliberately below typical desktop core counts so visible media
+// remains responsive instead of turning browsing into a batch-conversion job.
+const DEFAULT_MAX_CONCURRENT = 3;
 
 export class RepresentationScheduler {
   private readonly maxConcurrent: number;
@@ -101,13 +104,8 @@ export class RepresentationScheduler {
       };
       this.jobs.set(key, job);
       this.pushQueueEntry(job);
-    } else if (
-      job.state === "queued" &&
-      priorityRank(request.priority) > priorityRank(job.priority)
-    ) {
-      job.priority = request.priority;
-      job.revision += 1;
-      this.pushQueueEntry(job);
+    } else {
+      this.promoteJob(job, request.priority);
     }
 
     const activeJob = job;
@@ -132,6 +130,36 @@ export class RepresentationScheduler {
 
     this.pump();
     return promise;
+  }
+
+  /**
+   * Raise the priority of an existing thumbnail job without adding another
+   * subscriber or restarting backend work. Running work is intentionally left
+   * alone; queued work is reinserted into the heap with the higher rank.
+   */
+  promoteThumbnail(
+    request: ThumbnailRequest,
+    priority: RepresentationPriority,
+  ): boolean {
+    this.validateRequest({ ...request, priority });
+    const job = this.jobs.get(thumbnailRequestKey(request));
+    if (job === undefined) {
+      return false;
+    }
+    this.promoteJob(job, priority);
+    this.pump();
+    return true;
+  }
+
+  private promoteJob(job: PendingJob, priority: RepresentationPriority): void {
+    if (priorityRank(priority) <= priorityRank(job.priority)) {
+      return;
+    }
+    job.priority = priority;
+    if (job.state === "queued") {
+      job.revision += 1;
+      this.pushQueueEntry(job);
+    }
   }
 
   private validateRequest(request: ScheduledThumbnailRequest): void {
