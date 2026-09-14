@@ -28,6 +28,7 @@ export interface ViewerRuntimePorts {
 export interface ViewerRuntimeOptions {
   sessionIdFactory?: SessionIdFactory;
   representationMaxConcurrent?: number;
+  representationMaxBackgroundConcurrent?: number;
 }
 
 export interface ViewerRuntime {
@@ -54,7 +55,11 @@ export function createViewerRuntime(
   const selection = new MediaSelectionController(sessionController);
   const representationScheduler = new RepresentationScheduler(
     ports.representation,
-    { maxConcurrent: options.representationMaxConcurrent ?? 6 },
+    {
+      maxConcurrent: options.representationMaxConcurrent ?? 3,
+      maxBackgroundConcurrent:
+        options.representationMaxBackgroundConcurrent ?? 1,
+    },
   );
   const workspace = new ViewerWorkspaceController(
     sessionController,
