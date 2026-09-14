@@ -10,7 +10,11 @@ use waterfall_infra::{prune_disk_cache, DiskCachePolicy, DiskCachePruneReport};
 const THUMBNAIL_CACHE_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const THUMBNAIL_CACHE_TARGET_BYTES: u64 = 1_700 * 1024 * 1024;
 const THUMBNAIL_CACHE_MIN_AGE: Duration = Duration::from_secs(5 * 60);
-const GENERATED_FILES_BETWEEN_MAINTENANCE: u64 = 64;
+// Pruning stats every file in the cache directory, so doing it every few dozen
+// generated thumbnails becomes increasingly expensive as the cache grows. A
+// larger cadence keeps maintenance amortized and, importantly, off the first
+// thumbnail request of a fresh browsing session.
+const GENERATED_FILES_BETWEEN_MAINTENANCE: u64 = 256;
 
 /// Cumulative backend cache-registration telemetry plus current active leases.
 ///
@@ -38,7 +42,6 @@ pub struct ThumbnailCacheManager {
 #[derive(Default)]
 struct ThumbnailCacheState {
     active: HashMap<String, ActiveCachePath>,
-    maintenance_initialized: bool,
     generated_since_maintenance: u64,
     telemetry: ThumbnailCacheTelemetry,
 }
@@ -61,10 +64,10 @@ struct ActiveCachePath {
 
 impl ThumbnailCacheManager {
     /// Register one backend representation registration as an active cache
-    /// consumer. Maintenance runs on the first registration and periodically
-    /// after newly generated files. It never removes paths still registered as
-    /// active and relies on a short age grace period to protect concurrently
-    /// published files that have not reached registration yet.
+    /// consumer. Maintenance is amortized over newly generated files rather
+    /// than running on the first request. It never removes paths still
+    /// registered as active and relies on a short age grace period to protect
+    /// concurrently published files that have not reached registration yet.
     pub fn register_and_maintain(
         &self,
         resource_key: &str,
@@ -111,10 +114,9 @@ impl ThumbnailCacheManager {
                     state.telemetry.reused_registrations.saturating_add(1);
             }
 
-            let should_maintain = !state.maintenance_initialized
-                || state.generated_since_maintenance >= GENERATED_FILES_BETWEEN_MAINTENANCE;
+            let should_maintain =
+                state.generated_since_maintenance >= GENERATED_FILES_BETWEEN_MAINTENANCE;
             if should_maintain {
-                state.maintenance_initialized = true;
                 state.generated_since_maintenance = 0;
             }
 
@@ -244,8 +246,6 @@ mod tests {
                 reused_registrations: 2,
                 active_resource_keys: 1,
                 active_registrations: 2,
-                maintenance_runs: 1,
-                last_observed_cache_bytes: b"thumbnail".len() as u64,
                 ..ThumbnailCacheTelemetrySnapshot::default()
             }
         );
@@ -282,6 +282,7 @@ mod tests {
         assert_eq!(snapshot.reused_registrations, 1);
         assert_eq!(snapshot.active_resource_keys, 2);
         assert_eq!(snapshot.active_registrations, 2);
+        assert_eq!(snapshot.maintenance_runs, 0);
     }
 
     #[test]
