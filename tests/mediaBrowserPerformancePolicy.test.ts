@@ -92,7 +92,10 @@ function createBrowser() {
       sessionController: new MediaSessionController(scan, () => "session-1"),
       sourcePicker: new SourcePicker(),
       representationScheduler: new RepresentationScheduler(representations, {
+        // These tests exercise Browser window/bucket policy rather than the
+        // scheduler's production throttling, which has dedicated coverage.
         maxConcurrent: 64,
+        maxBackgroundConcurrent: 64,
       }),
       resourcePort: new ResourcePort(),
     },
