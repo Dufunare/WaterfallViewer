@@ -118,10 +118,9 @@ function mediaItem(index: number, kind: MediaItem["kind"] = "image"): MediaItem 
 }
 
 async function flushMicrotasks(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let index = 0; index < 8; index += 1) {
+    await Promise.resolve();
+  }
 }
 
 describe("MasonryBrowserController", () => {
