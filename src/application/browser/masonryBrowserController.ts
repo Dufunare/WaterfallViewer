@@ -1,5 +1,6 @@
 export {
   MediaBrowserController,
+  type BrowserColumnCount,
   type BrowserLayoutMode,
   type BrowserThumbnailStatus,
   type BrowserTile,
