@@ -174,9 +174,9 @@ export class RepresentationScheduler {
 
   /**
    * Reassign a job to the priority implied by the latest viewport. Unlike
-   * promotion, this also permits demotion so work that was visible in an old
-   * viewport cannot retain visible priority indefinitely while the user scrolls
-   * away. Running work is not restarted; only its scheduling class changes.
+   * promotion, this permits demotion and also refreshes the FIFO position of a
+   * queued job when its priority is unchanged. That makes queue order describe
+   * the latest viewport demand instead of historical scroll positions.
    */
   reprioritizeThumbnail(
     request: ThumbnailRequest,
@@ -187,7 +187,7 @@ export class RepresentationScheduler {
     if (job === undefined) {
       return false;
     }
-    this.setJobPriority(job, priority);
+    this.setJobPriority(job, priority, true);
     this.pump();
     return true;
   }
@@ -196,11 +196,18 @@ export class RepresentationScheduler {
     if (priorityRank(priority) <= priorityRank(job.priority)) {
       return;
     }
-    this.setJobPriority(job, priority);
+    this.setJobPriority(job, priority, false);
   }
 
-  private setJobPriority(job: PendingJob, priority: RepresentationPriority): void {
+  private setJobPriority(
+    job: PendingJob,
+    priority: RepresentationPriority,
+    refreshQueueOrder: boolean,
+  ): void {
     if (priority === job.priority) {
+      if (refreshQueueOrder && job.state === "queued") {
+        this.requeueJob(job);
+      }
       return;
     }
 
@@ -209,12 +216,7 @@ export class RepresentationScheduler {
     job.priority = priority;
 
     if (job.state === "queued") {
-      // Reinsert with a fresh sequence so ordering within the new class follows
-      // the latest viewport demand instead of the historical enqueue order.
-      job.sequence = this.nextJobSequence++;
-      job.revision += 1;
-      this.pushQueueEntry(job);
-      this.compactQueueIfNeeded();
+      this.requeueJob(job);
       return;
     }
 
@@ -230,6 +232,13 @@ export class RepresentationScheduler {
         this.runningBackgroundCount - 1,
       );
     }
+  }
+
+  private requeueJob(job: PendingJob): void {
+    job.sequence = this.nextJobSequence++;
+    job.revision += 1;
+    this.pushQueueEntry(job);
+    this.compactQueueIfNeeded();
   }
 
   private validateRequest(request: ScheduledThumbnailRequest): void {
@@ -388,7 +397,11 @@ export class RepresentationScheduler {
         sequence: job.sequence,
       });
     }
-    for (let index = Math.floor(this.queue.length / 2) - 1; index >= 0; index -= 1) {
+    for (
+      let index = Math.floor(this.queue.length / 2) - 1;
+      index >= 0;
+      index -= 1
+    ) {
       this.siftDown(index);
     }
   }
