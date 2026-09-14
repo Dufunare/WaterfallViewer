@@ -13,7 +13,7 @@ use image::{codecs::jpeg::JpegEncoder, ImageFormat, ImageReader, Limits};
 const MAX_THUMBNAIL_EDGE: u32 = 4096;
 const MAX_INPUT_DIMENSION: u32 = 65_535;
 const MAX_DECODE_ALLOCATION: u64 = 256 * 1024 * 1024;
-const JPEG_THUMBNAIL_QUALITY: u8 = 82;
+const JPEG_THUMBNAIL_QUALITY: u8 = 76;
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
