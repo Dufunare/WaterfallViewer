@@ -36,6 +36,10 @@ const canvasStyle = computed(() => ({
   height: `${Math.max(1, snapshot.value.totalHeight)}px`,
 }));
 const selectedIds = computed(() => new Set(selectionSnapshot.value.selectedIds));
+const orderedTiles = computed(() => [
+  ...snapshot.value.tiles.filter((tile) => tile.priority === "visible"),
+  ...snapshot.value.tiles.filter((tile) => tile.priority !== "visible"),
+]);
 const columnOptions = ["auto", 1, 2, 3, 4, 5, 6, 7, 8] as const;
 const rowHeightOptions = [120, 160, 220, 300, 400] as const;
 
@@ -168,7 +172,7 @@ onBeforeUnmount(() => {
 
     <div class="flow-canvas" :style="canvasStyle">
       <figure
-        v-for="tile in snapshot.tiles"
+        v-for="tile in orderedTiles"
         :key="tile.mediaId"
         class="flow-tile"
         :class="{
@@ -187,6 +191,7 @@ onBeforeUnmount(() => {
           :alt="tile.name"
           decoding="async"
           :loading="tile.priority === 'visible' ? 'eager' : 'lazy'"
+          :fetchpriority="tile.priority === 'visible' ? 'high' : 'low'"
           draggable="false"
         />
         <div v-else class="flow-placeholder">
