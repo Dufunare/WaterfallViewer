@@ -61,6 +61,8 @@ interface QueueEntry {
 // remains responsive instead of turning browsing into a batch-conversion job.
 const DEFAULT_MAX_CONCURRENT = 3;
 const DEFAULT_MAX_BACKGROUND_CONCURRENT = 1;
+const QUEUE_COMPACTION_MIN_ENTRIES = 128;
+const QUEUE_COMPACTION_STALE_FACTOR = 3;
 
 export class RepresentationScheduler {
   private readonly maxConcurrent: number;
@@ -153,10 +155,8 @@ export class RepresentationScheduler {
 
   /**
    * Raise the priority of an existing thumbnail job without adding another
-   * subscriber or restarting backend work. Queued work is reinserted into the
-   * heap. A background job promoted while already running stops consuming the
-   * background-only quota immediately, so another near-future item may warm in
-   * parallel while total CPU concurrency remains bounded.
+   * subscriber or restarting backend work. Kept for callers whose desired
+   * semantics are explicitly monotonic.
    */
   promoteThumbnail(
     request: ThumbnailRequest,
@@ -172,18 +172,59 @@ export class RepresentationScheduler {
     return true;
   }
 
+  /**
+   * Reassign a job to the priority implied by the latest viewport. Unlike
+   * promotion, this also permits demotion so work that was visible in an old
+   * viewport cannot retain visible priority indefinitely while the user scrolls
+   * away. Running work is not restarted; only its scheduling class changes.
+   */
+  reprioritizeThumbnail(
+    request: ThumbnailRequest,
+    priority: RepresentationPriority,
+  ): boolean {
+    this.validateRequest({ ...request, priority });
+    const job = this.jobs.get(thumbnailRequestKey(request));
+    if (job === undefined) {
+      return false;
+    }
+    this.setJobPriority(job, priority);
+    this.pump();
+    return true;
+  }
+
   private promoteJob(job: PendingJob, priority: RepresentationPriority): void {
     if (priorityRank(priority) <= priorityRank(job.priority)) {
       return;
     }
-    job.priority = priority;
-    if (job.state === "queued") {
-      job.revision += 1;
-      this.pushQueueEntry(job);
+    this.setJobPriority(job, priority);
+  }
+
+  private setJobPriority(job: PendingJob, priority: RepresentationPriority): void {
+    if (priority === job.priority) {
       return;
     }
-    if (priority === "visible" && job.countsAgainstBackgroundLimit) {
-      job.countsAgainstBackgroundLimit = false;
+
+    const wasBackground = job.priority !== "visible";
+    const willBeBackground = priority !== "visible";
+    job.priority = priority;
+
+    if (job.state === "queued") {
+      // Reinsert with a fresh sequence so ordering within the new class follows
+      // the latest viewport demand instead of the historical enqueue order.
+      job.sequence = this.nextJobSequence++;
+      job.revision += 1;
+      this.pushQueueEntry(job);
+      this.compactQueueIfNeeded();
+      return;
+    }
+
+    if (wasBackground === willBeBackground) {
+      return;
+    }
+    job.countsAgainstBackgroundLimit = willBeBackground;
+    if (willBeBackground) {
+      this.runningBackgroundCount += 1;
+    } else {
       this.runningBackgroundCount = Math.max(
         0,
         this.runningBackgroundCount - 1,
@@ -222,6 +263,7 @@ export class RepresentationScheduler {
       }
     }
 
+    this.compactQueueIfNeeded();
     this.pump();
   }
 
@@ -275,6 +317,7 @@ export class RepresentationScheduler {
       if (this.jobs.get(job.key) === job) {
         this.jobs.delete(job.key);
       }
+      this.compactQueueIfNeeded();
       this.pump();
     }
   }
@@ -310,6 +353,44 @@ export class RepresentationScheduler {
     };
     this.queue.push(entry);
     this.siftUp(this.queue.length - 1);
+  }
+
+  private compactQueueIfNeeded(): void {
+    if (this.queue.length < QUEUE_COMPACTION_MIN_ENTRIES) {
+      return;
+    }
+
+    let liveQueuedJobs = 0;
+    for (const job of this.jobs.values()) {
+      if (job.state === "queued" && job.subscribers.size > 0) {
+        liveQueuedJobs += 1;
+      }
+    }
+    if (
+      this.queue.length <=
+      Math.max(
+        QUEUE_COMPACTION_MIN_ENTRIES,
+        liveQueuedJobs * QUEUE_COMPACTION_STALE_FACTOR,
+      )
+    ) {
+      return;
+    }
+
+    this.queue.length = 0;
+    for (const job of this.jobs.values()) {
+      if (job.state !== "queued" || job.subscribers.size === 0) {
+        continue;
+      }
+      this.queue.push({
+        job,
+        revision: job.revision,
+        rank: priorityRank(job.priority),
+        sequence: job.sequence,
+      });
+    }
+    for (let index = Math.floor(this.queue.length / 2) - 1; index >= 0; index -= 1) {
+      this.siftDown(index);
+    }
   }
 
   private popNextRunnableJob(): PendingJob | undefined {
