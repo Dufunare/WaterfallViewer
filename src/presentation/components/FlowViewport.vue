@@ -30,6 +30,8 @@ let unsubscribeSelection: (() => void) | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let viewportFrame: number | null = null;
 
+const FLOW_MAX_REPRESENTATION_DPR = 1.5;
+
 const canvasStyle = computed(() => ({
   height: `${Math.max(1, snapshot.value.totalHeight)}px`,
 }));
@@ -91,7 +93,13 @@ function syncViewport(): void {
     width: element.clientWidth,
     height: element.clientHeight,
     scrollTop: element.scrollTop,
-    devicePixelRatio: Math.max(1, window.devicePixelRatio || 1),
+    // Flow is an overview surface. Asking the representation pipeline to match
+    // 2x/3x desktop scale factors provides little visible benefit at tile size
+    // while multiplying decode/resize work. Preview/Canvas keep independent LOD.
+    devicePixelRatio: Math.min(
+      FLOW_MAX_REPRESENTATION_DPR,
+      Math.max(1, window.devicePixelRatio || 1),
+    ),
   });
 }
 
