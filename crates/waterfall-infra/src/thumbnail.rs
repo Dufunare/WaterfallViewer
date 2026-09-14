@@ -8,11 +8,12 @@ use std::{
     },
 };
 
-use image::{ImageFormat, ImageReader, Limits};
+use image::{codecs::jpeg::JpegEncoder, ImageFormat, ImageReader, Limits};
 
 const MAX_THUMBNAIL_EDGE: u32 = 4096;
 const MAX_INPUT_DIMENSION: u32 = 65_535;
 const MAX_DECODE_ALLOCATION: u64 = 256 * 1024 * 1024;
+const JPEG_THUMBNAIL_QUALITY: u8 = 82;
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -92,6 +93,12 @@ impl From<std::io::Error> for ThumbnailError {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ImageThumbnailer;
 
+#[derive(Clone, Copy)]
+enum ThumbnailEncoding {
+    Png,
+    Jpeg,
+}
+
 impl ImageThumbnailer {
     pub fn ensure_png(
         &self,
@@ -107,19 +114,64 @@ impl ImageThumbnailer {
         )
     }
 
+    pub fn ensure_jpeg(
+        &self,
+        source: &Path,
+        destination: &Path,
+        spec: ThumbnailSpec,
+    ) -> Result<ThumbnailInfo, ThumbnailError> {
+        self.ensure_jpeg_cancellable(
+            source,
+            destination,
+            spec,
+            &ThumbnailCancellationToken::default(),
+        )
+    }
+
     /// Generate or reuse a PNG thumbnail while observing cancellation between
     /// expensive pipeline stages.
-    ///
-    /// Image decoding, resizing, and encoding are library calls that cannot be
-    /// preempted safely mid-call, so cancellation is cooperative rather than a
-    /// hard thread interruption. A cancellation observed before the final
-    /// atomic write leaves no partially published cache file.
     pub fn ensure_png_cancellable(
         &self,
         source: &Path,
         destination: &Path,
         spec: ThumbnailSpec,
         cancellation: &ThumbnailCancellationToken,
+    ) -> Result<ThumbnailInfo, ThumbnailError> {
+        self.ensure_encoded_cancellable(
+            source,
+            destination,
+            spec,
+            cancellation,
+            ThumbnailEncoding::Png,
+        )
+    }
+
+    /// JPEG is the preferred cache representation for JPEG source photos. It
+    /// avoids the expensive lossless PNG encode and substantially reduces cache
+    /// bytes while keeping more than enough quality for Flow thumbnails.
+    pub fn ensure_jpeg_cancellable(
+        &self,
+        source: &Path,
+        destination: &Path,
+        spec: ThumbnailSpec,
+        cancellation: &ThumbnailCancellationToken,
+    ) -> Result<ThumbnailInfo, ThumbnailError> {
+        self.ensure_encoded_cancellable(
+            source,
+            destination,
+            spec,
+            cancellation,
+            ThumbnailEncoding::Jpeg,
+        )
+    }
+
+    fn ensure_encoded_cancellable(
+        &self,
+        source: &Path,
+        destination: &Path,
+        spec: ThumbnailSpec,
+        cancellation: &ThumbnailCancellationToken,
+        encoding: ThumbnailEncoding,
     ) -> Result<ThumbnailInfo, ThumbnailError> {
         cancellation.check()?;
         if destination.exists() {
@@ -168,9 +220,17 @@ impl ImageThumbnailer {
         };
 
         let mut encoded = Cursor::new(Vec::new());
-        thumbnail
-            .write_to(&mut encoded, ImageFormat::Png)
-            .map_err(|error| ThumbnailError::Decode(error.to_string()))?;
+        match encoding {
+            ThumbnailEncoding::Png => thumbnail
+                .write_to(&mut encoded, ImageFormat::Png)
+                .map_err(|error| ThumbnailError::Decode(error.to_string()))?,
+            ThumbnailEncoding::Jpeg => JpegEncoder::new_with_quality(
+                &mut encoded,
+                JPEG_THUMBNAIL_QUALITY,
+            )
+            .encode_image(&thumbnail)
+            .map_err(|error| ThumbnailError::Decode(error.to_string()))?,
+        }
         cancellation.check()?;
 
         write_atomically(destination, encoded.into_inner())?;
@@ -218,7 +278,7 @@ fn temporary_path(destination: &Path, sequence: u64) -> PathBuf {
     let mut file_name = destination
         .file_name()
         .map(|value| value.to_os_string())
-        .unwrap_or_else(|| "thumbnail.png".into());
+        .unwrap_or_else(|| "thumbnail".into());
     file_name.push(format!(".tmp-{}-{sequence}", std::process::id()));
     destination.with_file_name(file_name)
 }
@@ -226,7 +286,7 @@ fn temporary_path(destination: &Path, sequence: u64) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::{ImageBuffer, Rgba};
+    use image::{ImageBuffer, Rgb, Rgba};
     use tempfile::tempdir;
 
     #[test]
@@ -239,6 +299,28 @@ mod tests {
 
         let info = ImageThumbnailer
             .ensure_png(&source, &destination, ThumbnailSpec::new(100).unwrap())
+            .unwrap();
+
+        assert_eq!(
+            info,
+            ThumbnailInfo {
+                width: 100,
+                height: 50
+            }
+        );
+        assert_eq!(image::image_dimensions(&destination).unwrap(), (100, 50));
+    }
+
+    #[test]
+    fn generates_aspect_preserving_jpeg_thumbnail() {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("source.jpg");
+        let destination = dir.path().join("cache/thumb.jpg");
+        let image = ImageBuffer::from_pixel(400, 200, Rgb([20_u8, 40, 60]));
+        image.save(&source).unwrap();
+
+        let info = ImageThumbnailer
+            .ensure_jpeg(&source, &destination, ThumbnailSpec::new(100).unwrap())
             .unwrap();
 
         assert_eq!(
