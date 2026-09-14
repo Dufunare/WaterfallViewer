@@ -20,6 +20,7 @@ import type {
 } from "../../layout/viewport/verticalViewportIndex";
 
 export type BrowserLayoutMode = "masonry" | "justified";
+export type BrowserColumnCount = "auto" | number;
 
 export type BrowserThumbnailStatus =
   | "loading"
@@ -44,6 +45,8 @@ export interface BrowserTile {
 
 export interface MediaBrowserSnapshot {
   layoutMode: BrowserLayoutMode;
+  columnCount: BrowserColumnCount;
+  justifiedTargetRowHeight: number;
   sessionId: string | null;
   sourceDisplayName: string | null;
   scanState: ScanState | null;
@@ -65,9 +68,14 @@ export interface MediaBrowserOptions {
   gap?: number;
   minColumnWidth?: number;
   maxColumns?: number;
+  fixedColumnCount?: number | null;
   justifiedTargetRowHeight?: number;
   initialLayoutMode?: BrowserLayoutMode;
+  /** Legacy explicit overscan. When omitted, viewport-relative windows are used. */
   overscanPx?: number;
+  renderWindowScreens?: number;
+  prefetchWindowScreens?: number;
+  warmThumbnailCount?: number;
   maxThumbnailEdge?: number;
   scanBatchSize?: number;
 }
@@ -85,11 +93,20 @@ interface ResolvedBrowserOptions {
   gap: number;
   minColumnWidth: number;
   maxColumns: number;
+  fixedColumnCount: number | null;
   justifiedTargetRowHeight: number;
   initialLayoutMode: BrowserLayoutMode;
-  overscanPx: number;
+  overscanPx: number | null;
+  renderWindowScreens: number;
+  prefetchWindowScreens: number;
+  warmThumbnailCount: number;
   maxThumbnailEdge: number;
   scanBatchSize: number;
+}
+
+interface BrowserLayoutSettings {
+  fixedColumnCount: number | null;
+  justifiedTargetRowHeight: number;
 }
 
 interface BrowserFlow {
@@ -99,7 +116,7 @@ interface BrowserFlow {
   readonly layoutItemCount: number;
   readonly deferredCount: number;
   readonly totalHeight: number;
-  configure(viewport: BrowserViewport): void;
+  configure(viewport: BrowserViewport, settings: BrowserLayoutSettings): void;
   append(sessionId: string, items: readonly MediaItem[]): void;
   sync(sessionId: string, items: readonly MediaItem[], terminal: boolean): void;
   markTerminal(): void;
@@ -114,7 +131,7 @@ type ThumbnailState =
       status: "loading";
       sessionId: string;
       requestKey: string;
-      priority: Exclude<RepresentationPriority, "prefetch">;
+      priority: RepresentationPriority;
       abortController: AbortController;
     }
   | {
@@ -123,6 +140,7 @@ type ThumbnailState =
       requestKey: string;
       uri: string;
       lease: ThumbnailRepresentationLease;
+      lastUsedAt: number;
     }
   | {
       status: "error";
@@ -131,16 +149,24 @@ type ThumbnailState =
       message: string;
     };
 
-const DEFAULT_OPTIONS: ResolvedBrowserOptions = {
+const DEFAULT_OPTIONS: Omit<ResolvedBrowserOptions, "overscanPx"> & {
+  overscanPx: null;
+} = {
   gap: 10,
   minColumnWidth: 220,
   maxColumns: 8,
+  fixedColumnCount: null,
   justifiedTargetRowHeight: 220,
   initialLayoutMode: "masonry",
-  overscanPx: 900,
-  maxThumbnailEdge: 4096,
+  overscanPx: null,
+  renderWindowScreens: 1,
+  prefetchWindowScreens: 2,
+  warmThumbnailCount: 256,
+  maxThumbnailEdge: 1024,
   scanBatchSize: 64,
 };
+
+const THUMBNAIL_BUCKETS = [256, 512, 1024] as const;
 
 export class MediaBrowserController {
   readonly #sessionController: MediaSessionController;
@@ -154,12 +180,16 @@ export class MediaBrowserController {
 
   #flow: BrowserFlow;
   #layoutMode: BrowserLayoutMode;
+  #fixedColumnCount: number | null;
+  #justifiedTargetRowHeight: number;
   #viewport: BrowserViewport | null = null;
   #sourceDisplayName: string | null = null;
   #lastSessionId: string | null = null;
   #lastReplacementRevision = 0;
   #snapshot: MediaBrowserSnapshot;
   #disposed = false;
+  #refreshScheduled = false;
+  #thumbnailUseSequence = 0;
 
   constructor(
     dependencies: MediaBrowserDependencies,
@@ -171,8 +201,14 @@ export class MediaBrowserController {
     this.#resourcePort = dependencies.resourcePort;
     this.#options = resolveOptions(options);
     this.#layoutMode = this.#options.initialLayoutMode;
+    this.#fixedColumnCount = this.#options.fixedColumnCount;
+    this.#justifiedTargetRowHeight = this.#options.justifiedTargetRowHeight;
     this.#flow = createFlow(this.#layoutMode, this.#options);
-    this.#snapshot = emptySnapshot(this.#layoutMode);
+    this.#snapshot = emptySnapshot(
+      this.#layoutMode,
+      this.#fixedColumnCount,
+      this.#justifiedTargetRowHeight,
+    );
 
     this.#unsubscribeSession = this.#sessionController.subscribe(() => {
       this.#handleSessionChange();
@@ -224,9 +260,29 @@ export class MediaBrowserController {
     }
 
     this.#layoutMode = mode;
-    this.#cancelAllThumbnailRequests();
     this.#flow = createFlow(mode, this.#options);
     this.#lastReplacementRevision = 0;
+    this.#refresh();
+  }
+
+  setColumnCount(columnCount: BrowserColumnCount): void {
+    this.#assertActive();
+    const resolved = columnCount === "auto" ? null : columnCount;
+    validateFixedColumnCount(resolved, this.#options.maxColumns);
+    if (resolved === this.#fixedColumnCount) {
+      return;
+    }
+    this.#fixedColumnCount = resolved;
+    this.#refresh();
+  }
+
+  setJustifiedTargetRowHeight(height: number): void {
+    this.#assertActive();
+    requireFinitePositive(height, "justifiedTargetRowHeight");
+    if (height === this.#justifiedTargetRowHeight) {
+      return;
+    }
+    this.#justifiedTargetRowHeight = height;
     this.#refresh();
   }
 
@@ -255,11 +311,18 @@ export class MediaBrowserController {
   }
 
   #refresh(): void {
+    if (this.#disposed) {
+      return;
+    }
     const session = this.#sessionController.current;
     const viewport = this.#viewport;
     if (session === null || viewport === null) {
       this.#snapshot = {
-        ...emptySnapshot(this.#layoutMode),
+        ...emptySnapshot(
+          this.#layoutMode,
+          this.#fixedColumnCount,
+          this.#justifiedTargetRowHeight,
+        ),
         sourceDisplayName: this.#sourceDisplayName,
         sessionId: session?.id ?? null,
         scanState: session === null ? null : cloneScanState(session.scanState),
@@ -269,7 +332,11 @@ export class MediaBrowserController {
       return;
     }
 
-    this.#flow.configure(viewport);
+    const settings: BrowserLayoutSettings = {
+      fixedColumnCount: this.#fixedColumnCount,
+      justifiedTargetRowHeight: this.#justifiedTargetRowHeight,
+    };
+    this.#flow.configure(viewport, settings);
     const terminal = isTerminalScanState(session.scanState);
     const replacementRevision = session.items.replacementRevision;
     if (
@@ -298,36 +365,39 @@ export class MediaBrowserController {
       height: viewport.height,
     };
     const visibleNodes = this.#flow.queryVisible(viewportRect);
+    const renderOverscan = resolveRenderOverscan(viewport, this.#options);
+    const prefetchOverscan = resolvePrefetchOverscan(viewport, this.#options);
     const renderNodes = this.#flow.queryVisible(viewportRect, {
-      overscan: {
-        top: this.#options.overscanPx,
-        bottom: this.#options.overscanPx,
-      },
+      overscan: { top: renderOverscan, bottom: renderOverscan },
     });
+    const interestNodes = this.#flow.queryVisible(viewportRect, {
+      overscan: { top: prefetchOverscan, bottom: prefetchOverscan },
+    });
+
     const visibleIds = new Set(visibleNodes.map((node) => node.mediaId));
     const renderIds = new Set(renderNodes.map((node) => node.mediaId));
+    const interestIds = new Set(interestNodes.map((node) => node.mediaId));
 
-    for (const [mediaId, state] of this.#thumbnailStates) {
-      if (state.sessionId !== session.id || !renderIds.has(mediaId)) {
-        this.#releaseThumbnailState(state);
-        this.#thumbnailStates.delete(mediaId);
-      }
+    this.#dropInactiveThumbnailWork(session.id, renderIds, interestIds);
+
+    // Submit in strict priority order because the scheduler starts work as soon
+    // as capacity is available. This prevents upper overscan from occupying all
+    // workers before visible media has even been enqueued.
+    for (const node of visibleNodes) {
+      this.#requestNodeThumbnail(session.id, session.items.get(node.mediaId), node, "visible", viewport);
     }
-
     for (const node of renderNodes) {
-      const media = session.items.get(node.mediaId);
-      if (media === undefined) {
-        continue;
+      if (!visibleIds.has(node.mediaId)) {
+        this.#requestNodeThumbnail(session.id, session.items.get(node.mediaId), node, "overscan", viewport);
       }
-      const priority = visibleIds.has(node.mediaId) ? "visible" : "overscan";
-      this.#ensureThumbnail(
-        session.id,
-        media,
-        node,
-        priority,
-        viewport.devicePixelRatio,
-      );
     }
+    for (const node of interestNodes) {
+      if (!renderIds.has(node.mediaId)) {
+        this.#requestNodeThumbnail(session.id, session.items.get(node.mediaId), node, "prefetch", viewport);
+      }
+    }
+
+    this.#pruneWarmThumbnails(session.id, interestIds);
 
     const tiles = renderNodes.flatMap((node) => {
       const media = session.items.get(node.mediaId);
@@ -340,6 +410,8 @@ export class MediaBrowserController {
 
     this.#snapshot = {
       layoutMode: this.#layoutMode,
+      columnCount: this.#fixedColumnCount ?? "auto",
+      justifiedTargetRowHeight: this.#justifiedTargetRowHeight,
       sessionId: session.id,
       sourceDisplayName: this.#sourceDisplayName,
       scanState: cloneScanState(session.scanState),
@@ -352,11 +424,30 @@ export class MediaBrowserController {
     this.#publish();
   }
 
+  #requestNodeThumbnail(
+    sessionId: string,
+    media: MediaItem | undefined,
+    node: LayoutNode,
+    priority: RepresentationPriority,
+    viewport: BrowserViewport,
+  ): void {
+    if (media === undefined) {
+      return;
+    }
+    this.#ensureThumbnail(
+      sessionId,
+      media,
+      node,
+      priority,
+      viewport.devicePixelRatio,
+    );
+  }
+
   #ensureThumbnail(
     sessionId: string,
     media: MediaItem,
     node: LayoutNode,
-    priority: Exclude<RepresentationPriority, "prefetch">,
+    priority: RepresentationPriority,
     devicePixelRatio: number,
   ): void {
     if (!supportsStaticThumbnail(media.kind)) {
@@ -373,16 +464,24 @@ export class MediaBrowserController {
 
     if (existing !== undefined) {
       if (existing.sessionId === sessionId && existing.requestKey === requestKey) {
-        if (
-          existing.status !== "loading" ||
-          priorityRank(priority) <= priorityRank(existing.priority)
-        ) {
+        if (existing.status === "ready") {
+          existing.lastUsedAt = ++this.#thumbnailUseSequence;
           return;
         }
-        existing.abortController.abort();
-      } else {
-        this.#releaseThumbnailState(existing);
+        if (existing.status === "loading") {
+          if (priorityRank(priority) > priorityRank(existing.priority)) {
+            existing.priority = priority;
+            this.#representationScheduler.promoteThumbnail(
+              { resourceKey: media.resourceKey, maxEdge },
+              priority,
+            );
+          }
+          return;
+        }
+        return;
       }
+      this.#releaseThumbnailState(existing);
+      this.#thumbnailStates.delete(media.id);
     }
 
     const abortController = new AbortController();
@@ -427,6 +526,7 @@ export class MediaBrowserController {
             requestKey,
             uri,
             lease: representation,
+            lastUsedAt: ++this.#thumbnailUseSequence,
           });
         } catch (error) {
           representation.release();
@@ -437,7 +537,7 @@ export class MediaBrowserController {
             message: normalizeError(error),
           });
         }
-        this.#refresh();
+        this.#scheduleRefresh();
       },
       (error) => {
         if (this.#thumbnailStates.get(media.id) !== state) {
@@ -453,9 +553,68 @@ export class MediaBrowserController {
           requestKey,
           message: normalizeError(error),
         });
-        this.#refresh();
+        this.#scheduleRefresh();
       },
     );
+  }
+
+  #dropInactiveThumbnailWork(
+    sessionId: string,
+    renderIds: ReadonlySet<string>,
+    interestIds: ReadonlySet<string>,
+  ): void {
+    for (const [mediaId, state] of this.#thumbnailStates) {
+      if (state.sessionId !== sessionId) {
+        this.#releaseThumbnailState(state);
+        this.#thumbnailStates.delete(mediaId);
+        continue;
+      }
+      if (state.status === "loading" && !interestIds.has(mediaId)) {
+        state.abortController.abort();
+        this.#thumbnailStates.delete(mediaId);
+      } else if (state.status === "error" && !renderIds.has(mediaId)) {
+        this.#thumbnailStates.delete(mediaId);
+      }
+    }
+  }
+
+  #pruneWarmThumbnails(
+    sessionId: string,
+    interestIds: ReadonlySet<string>,
+  ): void {
+    const warm = [...this.#thumbnailStates.entries()]
+      .filter(
+        ([mediaId, state]) =>
+          state.status === "ready" &&
+          state.sessionId === sessionId &&
+          !interestIds.has(mediaId),
+      )
+      .sort((left, right) => {
+        const leftState = left[1];
+        const rightState = right[1];
+        if (leftState.status !== "ready" || rightState.status !== "ready") {
+          return 0;
+        }
+        return rightState.lastUsedAt - leftState.lastUsedAt;
+      });
+
+    for (const [mediaId, state] of warm.slice(this.#options.warmThumbnailCount)) {
+      this.#releaseThumbnailState(state);
+      this.#thumbnailStates.delete(mediaId);
+    }
+  }
+
+  #scheduleRefresh(): void {
+    if (this.#disposed || this.#refreshScheduled) {
+      return;
+    }
+    this.#refreshScheduled = true;
+    queueMicrotask(() => {
+      this.#refreshScheduled = false;
+      if (!this.#disposed) {
+        this.#refresh();
+      }
+    });
   }
 
   #buildTile(
@@ -539,27 +698,24 @@ class MasonryBrowserFlow implements BrowserFlow {
   get sessionId(): string | null {
     return this.#model.sessionId;
   }
-
   get itemCount(): number {
     return this.#model.itemCount;
   }
-
   get layoutItemCount(): number {
     return this.#model.layoutItemCount;
   }
-
   get deferredCount(): number {
     return this.#model.deferredCount;
   }
-
   get totalHeight(): number {
     return this.#model.totalHeight;
   }
 
-  configure(viewport: BrowserViewport): void {
+  configure(viewport: BrowserViewport, settings: BrowserLayoutSettings): void {
     this.#model.configure({
       viewport: { width: viewport.width, height: 0 },
-      columnCount: calculateColumnCount(viewport.width, this.#options),
+      columnCount:
+        settings.fixedColumnCount ?? calculateColumnCount(viewport.width, this.#options),
       gap: this.#options.gap,
     });
   }
@@ -567,13 +723,10 @@ class MasonryBrowserFlow implements BrowserFlow {
   append(sessionId: string, items: readonly MediaItem[]): void {
     this.#model.append(sessionId, items);
   }
-
   sync(sessionId: string, items: readonly MediaItem[]): void {
     this.#model.sync(sessionId, items);
   }
-
   markTerminal(): void {}
-
   queryVisible(
     viewport: ViewportRect,
     options: ViewportQueryOptions = {},
@@ -599,27 +752,23 @@ class JustifiedBrowserFlow implements BrowserFlow {
   get sessionId(): string | null {
     return this.#model.sessionId;
   }
-
   get itemCount(): number {
     return this.#model.itemCount;
   }
-
   get layoutItemCount(): number {
     return this.#model.layoutItemCount;
   }
-
   get deferredCount(): number {
     return this.#model.deferredCount;
   }
-
   get totalHeight(): number {
     return this.#model.totalHeight;
   }
 
-  configure(viewport: BrowserViewport): void {
+  configure(viewport: BrowserViewport, settings: BrowserLayoutSettings): void {
     this.#model.configure({
       viewport: { width: viewport.width, height: 0 },
-      targetRowHeight: this.#options.justifiedTargetRowHeight,
+      targetRowHeight: settings.justifiedTargetRowHeight,
       gap: this.#options.gap,
     });
   }
@@ -627,7 +776,6 @@ class JustifiedBrowserFlow implements BrowserFlow {
   append(sessionId: string, items: readonly MediaItem[]): void {
     this.#model.append(sessionId, items);
   }
-
   sync(
     sessionId: string,
     items: readonly MediaItem[],
@@ -635,11 +783,9 @@ class JustifiedBrowserFlow implements BrowserFlow {
   ): void {
     this.#model.sync(sessionId, items, terminal);
   }
-
   markTerminal(): void {
     this.#model.markTerminal();
   }
-
   queryVisible(
     viewport: ViewportRect,
     options: ViewportQueryOptions = {},
@@ -660,9 +806,15 @@ function createFlow(
   }
 }
 
-function emptySnapshot(layoutMode: BrowserLayoutMode): MediaBrowserSnapshot {
+function emptySnapshot(
+  layoutMode: BrowserLayoutMode,
+  fixedColumnCount: number | null,
+  justifiedTargetRowHeight: number,
+): MediaBrowserSnapshot {
   return {
     layoutMode,
+    columnCount: fixedColumnCount ?? "auto",
+    justifiedTargetRowHeight,
     sessionId: null,
     sourceDisplayName: null,
     scanState: null,
@@ -675,17 +827,33 @@ function emptySnapshot(layoutMode: BrowserLayoutMode): MediaBrowserSnapshot {
 }
 
 function resolveOptions(options: MediaBrowserOptions): ResolvedBrowserOptions {
-  const resolved = { ...DEFAULT_OPTIONS, ...options };
+  const resolved: ResolvedBrowserOptions = {
+    ...DEFAULT_OPTIONS,
+    ...options,
+    overscanPx: options.overscanPx ?? null,
+    fixedColumnCount: options.fixedColumnCount ?? null,
+  };
   requireFiniteNonNegative(resolved.gap, "gap");
   requireFinitePositive(resolved.minColumnWidth, "minColumnWidth");
   requireFinitePositive(
     resolved.justifiedTargetRowHeight,
     "justifiedTargetRowHeight",
   );
-  requireFiniteNonNegative(resolved.overscanPx, "overscanPx");
+  if (resolved.overscanPx !== null) {
+    requireFiniteNonNegative(resolved.overscanPx, "overscanPx");
+  }
+  requireFiniteNonNegative(resolved.renderWindowScreens, "renderWindowScreens");
+  requireFiniteNonNegative(resolved.prefetchWindowScreens, "prefetchWindowScreens");
+  if (resolved.prefetchWindowScreens < resolved.renderWindowScreens) {
+    throw new RangeError("prefetchWindowScreens must be >= renderWindowScreens");
+  }
   validateLayoutMode(resolved.initialLayoutMode);
   if (!Number.isInteger(resolved.maxColumns) || resolved.maxColumns <= 0) {
     throw new RangeError("maxColumns must be a positive integer");
+  }
+  validateFixedColumnCount(resolved.fixedColumnCount, resolved.maxColumns);
+  if (!Number.isInteger(resolved.warmThumbnailCount) || resolved.warmThumbnailCount < 0) {
+    throw new RangeError("warmThumbnailCount must be a non-negative integer");
   }
   if (
     !Number.isInteger(resolved.maxThumbnailEdge) ||
@@ -702,6 +870,18 @@ function resolveOptions(options: MediaBrowserOptions): ResolvedBrowserOptions {
 function validateLayoutMode(mode: BrowserLayoutMode): void {
   if (mode !== "masonry" && mode !== "justified") {
     throw new RangeError(`unsupported layout mode: ${String(mode)}`);
+  }
+}
+
+function validateFixedColumnCount(
+  count: number | null,
+  maxColumns: number,
+): void {
+  if (count === null) {
+    return;
+  }
+  if (!Number.isInteger(count) || count <= 0 || count > maxColumns) {
+    throw new RangeError(`column count must be an integer between 1 and ${maxColumns}`);
   }
 }
 
@@ -727,20 +907,48 @@ function calculateThumbnailEdge(
   devicePixelRatio: number,
   maximum: number,
 ): number {
-  const requested = Math.ceil(
-    Math.max(node.width, node.height) * devicePixelRatio,
+  const requested = Math.max(
+    1,
+    Math.ceil(Math.max(node.width, node.height) * devicePixelRatio),
   );
-  return Math.max(1, Math.min(maximum, requested));
+  const effectiveMaximum = Math.max(1, Math.min(1024, maximum));
+  for (const bucket of THUMBNAIL_BUCKETS) {
+    if (bucket >= requested) {
+      return Math.min(bucket, effectiveMaximum);
+    }
+  }
+  return effectiveMaximum;
+}
+
+function resolveRenderOverscan(
+  viewport: BrowserViewport,
+  options: ResolvedBrowserOptions,
+): number {
+  return options.overscanPx ?? viewport.height * options.renderWindowScreens;
+}
+
+function resolvePrefetchOverscan(
+  viewport: BrowserViewport,
+  options: ResolvedBrowserOptions,
+): number {
+  return options.overscanPx === null
+    ? viewport.height * options.prefetchWindowScreens
+    : options.overscanPx * 2;
 }
 
 function supportsStaticThumbnail(kind: MediaKind): boolean {
   return kind === "image" || kind === "animated-image";
 }
 
-function priorityRank(
-  priority: Exclude<RepresentationPriority, "prefetch">,
-): number {
-  return priority === "visible" ? 2 : 1;
+function priorityRank(priority: RepresentationPriority): number {
+  switch (priority) {
+    case "visible":
+      return 3;
+    case "overscan":
+      return 2;
+    case "prefetch":
+      return 1;
+  }
 }
 
 function isTerminalScanState(state: ScanState): boolean {
