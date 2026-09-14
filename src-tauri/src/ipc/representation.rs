@@ -21,6 +21,8 @@ use crate::{
 const THUMBNAIL_CACHE_VERSION: &[u8] = b"waterfall-thumbnail-v2";
 const DIRECT_SOURCE_MAX_BYTES: u64 = 16 * 1024 * 1024;
 const DIRECT_SOURCE_MAX_PIXELS: u64 = 16_000_000;
+const DIRECT_SOURCE_EDGE_NUMERATOR: u64 = 3;
+const DIRECT_SOURCE_EDGE_DENOMINATOR: u64 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ThumbnailCacheEncoding {
@@ -235,7 +237,7 @@ fn generate_thumbnail_representation(
     })?;
 
     if let Some(representation) =
-        direct_source_representation(&source, &resource_key, &cancellation)?
+        direct_source_representation(&source, &resource_key, spec, &cancellation)?
     {
         return Ok(representation);
     }
@@ -289,6 +291,7 @@ fn generate_thumbnail_representation(
 fn direct_source_representation(
     source: &Path,
     resource_key: &str,
+    spec: ThumbnailSpec,
     cancellation: &ThumbnailCancellationToken,
 ) -> Result<Option<ThumbnailRepresentationDto>, RepresentationCommandError> {
     if !supports_direct_source(source) {
@@ -308,7 +311,8 @@ fn direct_source_representation(
         .source_dimensions(source)
         .map_err(map_thumbnail_error)?;
     let pixels = u64::from(info.width).saturating_mul(u64::from(info.height));
-    if pixels > DIRECT_SOURCE_MAX_PIXELS {
+    if pixels > DIRECT_SOURCE_MAX_PIXELS || !direct_source_dimensions_fit(info.width, info.height, spec)
+    {
         return Ok(None);
     }
     if cancellation.is_cancelled() {
@@ -320,6 +324,14 @@ fn direct_source_representation(
         width: info.width,
         height: info.height,
     }))
+}
+
+fn direct_source_dimensions_fit(width: u32, height: u32, spec: ThumbnailSpec) -> bool {
+    let source_edge = u64::from(width.max(height));
+    let allowed_edge = u64::from(spec.max_edge)
+        .saturating_mul(DIRECT_SOURCE_EDGE_NUMERATOR)
+        / DIRECT_SOURCE_EDGE_DENOMINATOR;
+    source_edge <= allowed_edge
 }
 
 fn supports_direct_source(source: &Path) -> bool {
@@ -423,6 +435,15 @@ mod tests {
         assert!(!supports_direct_source(Path::new("animated.gif")));
         assert!(!supports_direct_source(Path::new("photo.webp")));
         assert!(!supports_direct_source(Path::new("scan.tiff")));
+    }
+
+    #[test]
+    fn direct_source_requires_dimensions_close_to_requested_representation() {
+        let spec = ThumbnailSpec::new(512).unwrap();
+        assert!(direct_source_dimensions_fit(768, 512, spec));
+        assert!(direct_source_dimensions_fit(512, 768, spec));
+        assert!(!direct_source_dimensions_fit(1024, 768, spec));
+        assert!(!direct_source_dimensions_fit(4000, 3000, spec));
     }
 
     #[test]
