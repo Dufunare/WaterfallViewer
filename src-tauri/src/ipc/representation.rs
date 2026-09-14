@@ -18,7 +18,22 @@ use crate::{
     thumbnail_request::ThumbnailRequestRegistry,
 };
 
-const THUMBNAIL_CACHE_VERSION: &[u8] = b"waterfall-thumbnail-v1";
+const THUMBNAIL_CACHE_VERSION: &[u8] = b"waterfall-thumbnail-v2";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ThumbnailCacheEncoding {
+    Png,
+    Jpeg,
+}
+
+impl ThumbnailCacheEncoding {
+    fn extension(self) -> &'static str {
+        match self {
+            Self::Png => "png",
+            Self::Jpeg => "jpg",
+        }
+    }
+}
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -120,7 +135,7 @@ pub async fn request_thumbnail(
         .map_err(|error| RepresentationCommandError::internal(error.to_string()))?
         .join("representations")
         .join("image-thumbnails")
-        .join("v1");
+        .join("v2");
     let resources = resources.inner().clone();
     let cache = cache.inner().clone();
     let requests = requests.inner().clone();
@@ -208,11 +223,25 @@ fn generate_thumbnail_representation(
     let source = resources.resolve(&resource_key).ok_or_else(|| {
         RepresentationCommandError::unavailable("resource key is not active or registered")
     })?;
-    let cache_path = thumbnail_cache_path(&cache_root, &source, spec)?;
+    let encoding = thumbnail_cache_encoding(&source);
+    let cache_path = thumbnail_cache_path(&cache_root, &source, spec, encoding)?;
     let newly_generated = !cache_path.exists();
-    let info = ImageThumbnailer
-        .ensure_png_cancellable(&source, &cache_path, spec, &cancellation)
-        .map_err(map_thumbnail_error)?;
+    let thumbnailer = ImageThumbnailer;
+    let info = match encoding {
+        ThumbnailCacheEncoding::Jpeg => thumbnailer.ensure_jpeg_cancellable(
+            &source,
+            &cache_path,
+            spec,
+            &cancellation,
+        ),
+        ThumbnailCacheEncoding::Png => thumbnailer.ensure_png_cancellable(
+            &source,
+            &cache_path,
+            spec,
+            &cancellation,
+        ),
+    }
+    .map_err(map_thumbnail_error)?;
     if cancellation.is_cancelled() {
         return Err(RepresentationCommandError::cancelled());
     }
@@ -246,10 +275,23 @@ fn generate_thumbnail_representation(
     })
 }
 
+fn thumbnail_cache_encoding(source: &Path) -> ThumbnailCacheEncoding {
+    match source
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("jpg" | "jpeg") => ThumbnailCacheEncoding::Jpeg,
+        _ => ThumbnailCacheEncoding::Png,
+    }
+}
+
 fn thumbnail_cache_path(
     cache_root: &Path,
     source: &Path,
     spec: ThumbnailSpec,
+    encoding: ThumbnailCacheEncoding,
 ) -> Result<PathBuf, RepresentationCommandError> {
     let metadata = fs::metadata(source).map_err(|error| {
         RepresentationCommandError::unavailable(format!("source metadata unavailable: {error}"))
@@ -269,13 +311,18 @@ fn thumbnail_cache_path(
     hasher.update(metadata.len().to_le_bytes());
     hasher.update(modified_nanos.to_le_bytes());
     hasher.update(spec.max_edge.to_le_bytes());
+    hasher.update([match encoding {
+        ThumbnailCacheEncoding::Png => 0,
+        ThumbnailCacheEncoding::Jpeg => 1,
+    }]);
     let digest = hasher.finalize();
 
     let mut file_name = String::with_capacity(digest.len() * 2 + 4);
     for byte in digest {
         write!(&mut file_name, "{byte:02x}").expect("writing to String cannot fail");
     }
-    file_name.push_str(".png");
+    file_name.push('.');
+    file_name.push_str(encoding.extension());
     Ok(cache_root.join(file_name))
 }
 
@@ -315,22 +362,50 @@ mod tests {
         let source = dir.path().join("source.jpg");
         let cache = dir.path().join("cache");
         fs::write(&source, b"abc").unwrap();
+        let encoding = thumbnail_cache_encoding(&source);
 
-        let first =
-            thumbnail_cache_path(&cache, &source, ThumbnailSpec::new(256).unwrap()).unwrap();
-        let other_edge =
-            thumbnail_cache_path(&cache, &source, ThumbnailSpec::new(512).unwrap()).unwrap();
+        let first = thumbnail_cache_path(
+            &cache,
+            &source,
+            ThumbnailSpec::new(256).unwrap(),
+            encoding,
+        )
+        .unwrap();
+        let other_edge = thumbnail_cache_path(
+            &cache,
+            &source,
+            ThumbnailSpec::new(512).unwrap(),
+            encoding,
+        )
+        .unwrap();
         assert_ne!(first, other_edge);
 
         let mut file = fs::OpenOptions::new().append(true).open(&source).unwrap();
         file.write_all(b"def").unwrap();
         file.sync_all().unwrap();
-        let changed =
-            thumbnail_cache_path(&cache, &source, ThumbnailSpec::new(256).unwrap()).unwrap();
+        let changed = thumbnail_cache_path(
+            &cache,
+            &source,
+            ThumbnailSpec::new(256).unwrap(),
+            encoding,
+        )
+        .unwrap();
         assert_ne!(first, changed);
-        assert_eq!(
-            first.extension().and_then(|value| value.to_str()),
-            Some("png")
-        );
+        assert_eq!(first.extension().and_then(|value| value.to_str()), Some("jpg"));
+    }
+
+    #[test]
+    fn transparent_capable_sources_keep_png_cache_representation() {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("source.png");
+        fs::write(&source, b"abc").unwrap();
+        let path = thumbnail_cache_path(
+            &dir.path().join("cache"),
+            &source,
+            ThumbnailSpec::new(256).unwrap(),
+            thumbnail_cache_encoding(&source),
+        )
+        .unwrap();
+        assert_eq!(path.extension().and_then(|value| value.to_str()), Some("png"));
     }
 }
