@@ -34,6 +34,8 @@ const canvasStyle = computed(() => ({
   height: `${Math.max(1, snapshot.value.totalHeight)}px`,
 }));
 const selectedIds = computed(() => new Set(selectionSnapshot.value.selectedIds));
+const columnOptions = ["auto", 1, 2, 3, 4, 5, 6, 7, 8] as const;
+const rowHeightOptions = [120, 160, 220, 300, 400] as const;
 
 function tileStyle(tile: BrowserTile): Record<string, string> {
   return {
@@ -49,6 +51,24 @@ function selectTile(tile: BrowserTile, event: MouseEvent): void {
   } else {
     selection.replace(tile.mediaId);
   }
+}
+
+function handleColumnCountChange(event: Event): void {
+  const target = event.currentTarget;
+  if (!(target instanceof HTMLSelectElement)) {
+    return;
+  }
+  props.browser.setColumnCount(
+    target.value === "auto" ? "auto" : Number(target.value),
+  );
+}
+
+function handleRowHeightChange(event: Event): void {
+  const target = event.currentTarget;
+  if (!(target instanceof HTMLSelectElement)) {
+    return;
+  }
+  props.browser.setJustifiedTargetRowHeight(Number(target.value));
 }
 
 function scheduleViewportSync(): void {
@@ -108,6 +128,36 @@ onBeforeUnmount(() => {
     aria-label="Flow media browser"
     @scroll.passive="scheduleViewportSync"
   >
+    <div class="flow-density-controls" aria-label="Flow density controls">
+      <label v-if="snapshot.layoutMode === 'masonry'" class="density-control">
+        <span>Columns</span>
+        <select :value="snapshot.columnCount" @change="handleColumnCountChange">
+          <option
+            v-for="option in columnOptions"
+            :key="String(option)"
+            :value="option"
+          >
+            {{ option === "auto" ? "Auto" : option }}
+          </option>
+        </select>
+      </label>
+      <label v-else class="density-control">
+        <span>Row</span>
+        <select
+          :value="snapshot.justifiedTargetRowHeight"
+          @change="handleRowHeightChange"
+        >
+          <option
+            v-for="height in rowHeightOptions"
+            :key="height"
+            :value="height"
+          >
+            {{ height }} px
+          </option>
+        </select>
+      </label>
+    </div>
+
     <div class="flow-canvas" :style="canvasStyle">
       <figure
         v-for="tile in snapshot.tiles"
@@ -128,7 +178,7 @@ onBeforeUnmount(() => {
           :src="tile.thumbnailUri"
           :alt="tile.name"
           decoding="async"
-          loading="eager"
+          :loading="tile.priority === 'visible' ? 'eager' : 'lazy'"
           draggable="false"
         />
         <div v-else class="flow-placeholder">
@@ -155,6 +205,40 @@ onBeforeUnmount(() => {
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
   contain: strict;
+}
+
+.flow-density-controls {
+  position: sticky;
+  top: 8px;
+  z-index: 4;
+  display: flex;
+  justify-content: flex-end;
+  width: fit-content;
+  margin: 8px 8px -39px auto;
+  pointer-events: auto;
+}
+
+.density-control {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 31px;
+  padding: 4px 6px 4px 9px;
+  border: 1px solid var(--wf-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--wf-surface) 92%, transparent);
+  color: var(--wf-text-muted);
+  font-size: 0.72rem;
+  backdrop-filter: blur(8px);
+}
+
+.density-control select {
+  min-height: 24px;
+  border: 0;
+  border-radius: 5px;
+  background: var(--wf-surface-raised);
+  color: var(--wf-text);
+  font: inherit;
 }
 
 .flow-canvas {
