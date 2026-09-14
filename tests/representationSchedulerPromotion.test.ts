@@ -108,6 +108,60 @@ describe("RepresentationScheduler explicit promotion", () => {
     await request;
   });
 
+  it("demotes stale visible work so a newer viewport wins the next worker", async () => {
+    const port = new ControlledPort();
+    const scheduler = new RepresentationScheduler(port, {
+      maxConcurrent: 1,
+      maxBackgroundConcurrent: 1,
+    });
+
+    const blocker = scheduler.requestThumbnail({
+      resourceKey: "running-old-visible",
+      maxEdge: 256,
+      priority: "visible",
+    });
+    const staleVisible = scheduler.requestThumbnail({
+      resourceKey: "queued-old-visible",
+      maxEdge: 256,
+      priority: "visible",
+    });
+    const currentVisible = scheduler.requestThumbnail({
+      resourceKey: "current-visible",
+      maxEdge: 256,
+      priority: "prefetch",
+    });
+    await flushMicrotasks();
+    expect(port.calls.map((call) => call.resourceKey)).toEqual([
+      "running-old-visible",
+    ]);
+
+    expect(
+      scheduler.reprioritizeThumbnail(
+        { resourceKey: "queued-old-visible", maxEdge: 256 },
+        "overscan",
+      ),
+    ).toBe(true);
+    expect(
+      scheduler.reprioritizeThumbnail(
+        { resourceKey: "current-visible", maxEdge: 256 },
+        "visible",
+      ),
+    ).toBe(true);
+
+    port.resolve(0);
+    await blocker;
+    await flushMicrotasks();
+    expect(port.calls[1].resourceKey).toBe("current-visible");
+
+    port.resolve(1);
+    await currentVisible;
+    await flushMicrotasks();
+    expect(port.calls[2].resourceKey).toBe("queued-old-visible");
+
+    port.resolve(2);
+    await staleVisible;
+  });
+
   it("limits background work so visible requests keep reserved capacity", async () => {
     const port = new ControlledPort();
     const scheduler = new RepresentationScheduler(port, {
