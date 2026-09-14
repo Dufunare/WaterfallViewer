@@ -19,6 +19,8 @@ use crate::{
 };
 
 const THUMBNAIL_CACHE_VERSION: &[u8] = b"waterfall-thumbnail-v2";
+const DIRECT_SOURCE_MAX_BYTES: u64 = 16 * 1024 * 1024;
+const DIRECT_SOURCE_MAX_PIXELS: u64 = 16_000_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ThumbnailCacheEncoding {
@@ -201,11 +203,19 @@ pub fn release_representation(
         ));
     }
 
-    let release_result = resources.release_derived(&resource_key);
-    if let Err(error) = cache.release(&resource_key) {
-        eprintln!("failed to release thumbnail cache lease for {resource_key}: {error}");
+    match resources.release_derived(&resource_key) {
+        Ok(removed) => {
+            if let Err(error) = cache.release(&resource_key) {
+                eprintln!("failed to release thumbnail cache lease for {resource_key}: {error}");
+            }
+            Ok(removed)
+        }
+        // The fast path deliberately returns an existing source resource key.
+        // Source resources belong to the media session rather than a thumbnail
+        // lease, so releasing that representation is a no-op.
+        Err(ResourceRegistryError::NotDerivedResource) => Ok(false),
+        Err(error) => Err(map_registry_error(error)),
     }
-    release_result.map_err(map_registry_error)
 }
 
 fn generate_thumbnail_representation(
@@ -223,6 +233,15 @@ fn generate_thumbnail_representation(
     let source = resources.resolve(&resource_key).ok_or_else(|| {
         RepresentationCommandError::unavailable("resource key is not active or registered")
     })?;
+
+    if let Some(representation) = direct_source_representation(
+        &source,
+        &resource_key,
+        &cancellation,
+    )? {
+        return Ok(representation);
+    }
+
     let encoding = thumbnail_cache_encoding(&source);
     let cache_path = thumbnail_cache_path(&cache_root, &source, spec, encoding)?;
     let newly_generated = !cache_path.exists();
@@ -273,6 +292,53 @@ fn generate_thumbnail_representation(
         width: info.width,
         height: info.height,
     })
+}
+
+fn direct_source_representation(
+    source: &Path,
+    resource_key: &str,
+    cancellation: &ThumbnailCancellationToken,
+) -> Result<Option<ThumbnailRepresentationDto>, RepresentationCommandError> {
+    if !supports_direct_source(source) {
+        return Ok(None);
+    }
+    let metadata = fs::metadata(source).map_err(|error| {
+        RepresentationCommandError::unavailable(format!("source metadata unavailable: {error}"))
+    })?;
+    if metadata.len() > DIRECT_SOURCE_MAX_BYTES {
+        return Ok(None);
+    }
+    if cancellation.is_cancelled() {
+        return Err(RepresentationCommandError::cancelled());
+    }
+
+    let info = ImageThumbnailer
+        .source_dimensions(source)
+        .map_err(map_thumbnail_error)?;
+    let pixels = u64::from(info.width).saturating_mul(u64::from(info.height));
+    if pixels > DIRECT_SOURCE_MAX_PIXELS {
+        return Ok(None);
+    }
+    if cancellation.is_cancelled() {
+        return Err(RepresentationCommandError::cancelled());
+    }
+
+    Ok(Some(ThumbnailRepresentationDto {
+        resource_key: resource_key.to_owned(),
+        width: info.width,
+        height: info.height,
+    }))
+}
+
+fn supports_direct_source(source: &Path) -> bool {
+    matches!(
+        source
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.to_ascii_lowercase())
+            .as_deref(),
+        Some("jpg" | "jpeg" | "png" | "bmp")
+    )
 }
 
 fn thumbnail_cache_encoding(source: &Path) -> ThumbnailCacheEncoding {
@@ -355,6 +421,17 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::tempdir;
+
+    #[test]
+    fn direct_source_extensions_are_conservative() {
+        assert!(supports_direct_source(Path::new("photo.jpg")));
+        assert!(supports_direct_source(Path::new("photo.JPEG")));
+        assert!(supports_direct_source(Path::new("graphic.png")));
+        assert!(supports_direct_source(Path::new("bitmap.bmp")));
+        assert!(!supports_direct_source(Path::new("animated.gif")));
+        assert!(!supports_direct_source(Path::new("photo.webp")));
+        assert!(!supports_direct_source(Path::new("scan.tiff")));
+    }
 
     #[test]
     fn cache_key_changes_with_size_mtime_or_requested_edge() {
