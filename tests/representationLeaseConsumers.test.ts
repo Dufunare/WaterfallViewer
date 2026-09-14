@@ -100,10 +100,11 @@ async function flushMicrotasks(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
+  await Promise.resolve();
 }
 
 describe("representation lease consumers", () => {
-  it("releases Flow thumbnail leases when tiles leave the virtual render window", async () => {
+  it("keeps Flow thumbnails warm outside the render window and reuses them on return", async () => {
     const scanPort = new FakeScanPort();
     const sessions = new MediaSessionController(scanPort, () => "session-1");
     const representations = new TrackingRepresentationPort();
@@ -121,6 +122,7 @@ describe("representation lease consumers", () => {
         minColumnWidth: 100,
         maxColumns: 4,
         overscanPx: 0,
+        warmThumbnailCount: 64,
       },
     );
 
@@ -141,10 +143,9 @@ describe("representation lease consumers", () => {
     });
     await flushMicrotasks();
 
-    const firstWindowKeys = new Set(
-      representations.calls.map((request) => representations.derivedKey(request)),
-    );
-    expect(firstWindowKeys.size).toBeGreaterThan(0);
+    const firstWindowIds = new Set(browser.snapshot.tiles.map((tile) => tile.mediaId));
+    const initialCallCount = representations.calls.length;
+    expect(firstWindowIds.size).toBeGreaterThan(0);
     expect(representations.releases).toEqual([]);
 
     browser.setViewport({
@@ -155,12 +156,32 @@ describe("representation lease consumers", () => {
     });
     await flushMicrotasks();
 
-    expect(representations.releases.length).toBeGreaterThan(0);
-    expect(
-      representations.releases.every((resourceKey) => firstWindowKeys.has(resourceKey)),
-    ).toBe(true);
+    expect(representations.releases).toEqual([]);
+
+    browser.setViewport({
+      width: 220,
+      height: 210,
+      scrollTop: 0,
+      devicePixelRatio: 1,
+    });
+    await flushMicrotasks();
+
+    expect(browser.snapshot.tiles.some((tile) => firstWindowIds.has(tile.mediaId))).toBe(true);
+    expect(representations.calls.length).toBeGreaterThan(initialCallCount);
+    const firstWindowResourceKeys = new Set(
+      [...firstWindowIds].map((mediaId) => {
+        const index = Number(mediaId.replace("media-", ""));
+        return `1/${index + 1}`;
+      }),
+    );
+    const repeatCalls = representations.calls
+      .slice(initialCallCount)
+      .filter((request) => firstWindowResourceKeys.has(request.resourceKey));
+    expect(repeatCalls).toEqual([]);
 
     browser.dispose();
+    await flushMicrotasks();
+    expect(representations.releases.length).toBeGreaterThan(0);
   });
 
   it("releases the previous Canvas LOD lease and the final lease on dispose", async () => {
