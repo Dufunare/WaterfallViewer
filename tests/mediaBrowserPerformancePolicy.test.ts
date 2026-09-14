@@ -153,7 +153,7 @@ describe("MediaBrowserController performance policy", () => {
     browser.dispose();
   });
 
-  it("uses bounded thumbnail buckets and never requests a Flow thumbnail above 1024", async () => {
+  it("uses bounded thumbnail buckets and never requests a Flow thumbnail above 768", async () => {
     const { browser, scan, representations } = createBrowser();
     browser.setViewport({
       width: 900,
@@ -172,10 +172,12 @@ describe("MediaBrowserController performance policy", () => {
     expect(representations.calls.length).toBeGreaterThan(0);
     expect(
       representations.calls.every((request) =>
-        [256, 512, 1024].includes(request.maxEdge),
+        [256, 512, 768].includes(request.maxEdge),
       ),
     ).toBe(true);
-    expect(Math.max(...representations.calls.map((request) => request.maxEdge))).toBeLessThanOrEqual(1024);
+    expect(
+      Math.max(...representations.calls.map((request) => request.maxEdge)),
+    ).toBeLessThanOrEqual(768);
 
     browser.dispose();
   });
