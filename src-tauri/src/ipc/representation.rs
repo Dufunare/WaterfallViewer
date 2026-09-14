@@ -311,7 +311,8 @@ fn direct_source_representation(
         .source_dimensions(source)
         .map_err(map_thumbnail_error)?;
     let pixels = u64::from(info.width).saturating_mul(u64::from(info.height));
-    if pixels > DIRECT_SOURCE_MAX_PIXELS || !direct_source_dimensions_fit(info.width, info.height, spec)
+    if pixels > DIRECT_SOURCE_MAX_PIXELS
+        || !direct_source_dimensions_fit(info.width, info.height, spec)
     {
         return Ok(None);
     }
@@ -328,8 +329,7 @@ fn direct_source_representation(
 
 fn direct_source_dimensions_fit(width: u32, height: u32, spec: ThumbnailSpec) -> bool {
     let source_edge = u64::from(width.max(height));
-    let allowed_edge = u64::from(spec.max_edge)
-        .saturating_mul(DIRECT_SOURCE_EDGE_NUMERATOR)
+    let allowed_edge = u64::from(spec.max_edge).saturating_mul(DIRECT_SOURCE_EDGE_NUMERATOR)
         / DIRECT_SOURCE_EDGE_DENOMINATOR;
     source_edge <= allowed_edge
 }
