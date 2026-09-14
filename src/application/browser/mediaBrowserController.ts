@@ -161,12 +161,12 @@ const DEFAULT_OPTIONS: Omit<ResolvedBrowserOptions, "overscanPx"> & {
   overscanPx: null,
   renderWindowScreens: 1,
   prefetchWindowScreens: 2,
-  warmThumbnailCount: 256,
-  maxThumbnailEdge: 1024,
+  warmThumbnailCount: 64,
+  maxThumbnailEdge: 768,
   scanBatchSize: 64,
 };
 
-const THUMBNAIL_BUCKETS = [256, 512, 1024] as const;
+const THUMBNAIL_BUCKETS = [256, 512, 768] as const;
 
 export class MediaBrowserController {
   readonly #sessionController: MediaSessionController;
@@ -380,20 +380,39 @@ export class MediaBrowserController {
 
     this.#dropInactiveThumbnailWork(session.id, renderIds, interestIds);
 
-    // Submit in strict priority order because the scheduler starts work as soon
-    // as capacity is available. This prevents upper overscan from occupying all
-    // workers before visible media has even been enqueued.
+    // Re-evaluate every loading request against the latest viewport. Priority is
+    // intentionally not monotonic: media that was visible in an old viewport
+    // must be demoted when it becomes overscan/prefetch, otherwise historical
+    // FIFO order can starve the user's current viewport during a long scroll.
     for (const node of visibleNodes) {
-      this.#requestNodeThumbnail(session.id, session.items.get(node.mediaId), node, "visible", viewport);
+      this.#requestNodeThumbnail(
+        session.id,
+        session.items.get(node.mediaId),
+        node,
+        "visible",
+        viewport,
+      );
     }
     for (const node of renderNodes) {
       if (!visibleIds.has(node.mediaId)) {
-        this.#requestNodeThumbnail(session.id, session.items.get(node.mediaId), node, "overscan", viewport);
+        this.#requestNodeThumbnail(
+          session.id,
+          session.items.get(node.mediaId),
+          node,
+          "overscan",
+          viewport,
+        );
       }
     }
     for (const node of interestNodes) {
       if (!renderIds.has(node.mediaId)) {
-        this.#requestNodeThumbnail(session.id, session.items.get(node.mediaId), node, "prefetch", viewport);
+        this.#requestNodeThumbnail(
+          session.id,
+          session.items.get(node.mediaId),
+          node,
+          "prefetch",
+          viewport,
+        );
       }
     }
 
@@ -469,9 +488,9 @@ export class MediaBrowserController {
           return;
         }
         if (existing.status === "loading") {
-          if (priorityRank(priority) > priorityRank(existing.priority)) {
+          if (priority !== existing.priority) {
             existing.priority = priority;
-            this.#representationScheduler.promoteThumbnail(
+            this.#representationScheduler.reprioritizeThumbnail(
               { resourceKey: media.resourceKey, maxEdge },
               priority,
             );
@@ -907,11 +926,12 @@ function calculateThumbnailEdge(
   devicePixelRatio: number,
   maximum: number,
 ): number {
+  const effectiveDevicePixelRatio = Math.min(devicePixelRatio, 1.5);
   const requested = Math.max(
     1,
-    Math.ceil(Math.max(node.width, node.height) * devicePixelRatio),
+    Math.ceil(Math.max(node.width, node.height) * effectiveDevicePixelRatio),
   );
-  const effectiveMaximum = Math.max(1, Math.min(1024, maximum));
+  const effectiveMaximum = Math.max(1, Math.min(768, maximum));
   for (const bucket of THUMBNAIL_BUCKETS) {
     if (bucket >= requested) {
       return Math.min(bucket, effectiveMaximum);
@@ -938,17 +958,6 @@ function resolvePrefetchOverscan(
 
 function supportsStaticThumbnail(kind: MediaKind): boolean {
   return kind === "image" || kind === "animated-image";
-}
-
-function priorityRank(priority: RepresentationPriority): number {
-  switch (priority) {
-    case "visible":
-      return 3;
-    case "overscan":
-      return 2;
-    case "prefetch":
-      return 1;
-  }
 }
 
 function isTerminalScanState(state: ScanState): boolean {
