@@ -162,6 +162,44 @@ describe("RepresentationScheduler explicit promotion", () => {
     await staleVisible;
   });
 
+  it("prefers the newest queued request within the same priority", async () => {
+    const port = new ControlledPort();
+    const scheduler = new RepresentationScheduler(port, {
+      maxConcurrent: 1,
+      maxBackgroundConcurrent: 1,
+    });
+
+    const blocker = scheduler.requestThumbnail({
+      resourceKey: "running-visible",
+      maxEdge: 256,
+      priority: "visible",
+    });
+    const oldVisible = scheduler.requestThumbnail({
+      resourceKey: "old-visible",
+      maxEdge: 256,
+      priority: "visible",
+    });
+    const latestVisible = scheduler.requestThumbnail({
+      resourceKey: "latest-visible",
+      maxEdge: 256,
+      priority: "visible",
+    });
+    await flushMicrotasks();
+
+    port.resolve(0);
+    await blocker;
+    await flushMicrotasks();
+    expect(port.calls[1].resourceKey).toBe("latest-visible");
+
+    port.resolve(1);
+    await latestVisible;
+    await flushMicrotasks();
+    expect(port.calls[2].resourceKey).toBe("old-visible");
+
+    port.resolve(2);
+    await oldVisible;
+  });
+
   it("limits background work so visible requests keep reserved capacity", async () => {
     const port = new ControlledPort();
     const scheduler = new RepresentationScheduler(port, {
