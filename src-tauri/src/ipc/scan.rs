@@ -13,33 +13,16 @@ use waterfall_core::{
     ScanEvent, ScanEventSink, ScanFailure, ScanFailureKind, ScanRequest, ScanSummary, ScanWarning,
     SourceId, VisualMetadata, VisualMetadataReader,
 };
-use waterfall_infra::{InMemoryVisualMetadataCache, LocalFilesystemScanner, VisualMetadataCache};
+use waterfall_infra::LocalFilesystemScanner;
 
 use crate::{local_source::LocalSourceRegistry, media_resource::MediaResourceRegistry};
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct ScanRegistry {
     sessions: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
-    visual_metadata_cache: Arc<dyn VisualMetadataCache>,
-}
-
-impl Default for ScanRegistry {
-    fn default() -> Self {
-        Self::with_visual_metadata_cache(InMemoryVisualMetadataCache::new())
-    }
 }
 
 impl ScanRegistry {
-    pub fn with_visual_metadata_cache<C>(cache: C) -> Self
-    where
-        C: VisualMetadataCache + 'static,
-    {
-        Self {
-            sessions: Arc::new(Mutex::new(HashMap::new())),
-            visual_metadata_cache: Arc::new(cache),
-        }
-    }
-
     fn register(&self, session_id: &str) -> Result<CancellationToken, ScanCommandError> {
         if session_id.trim().is_empty() {
             return Err(ScanCommandError::invalid_request(
@@ -310,10 +293,6 @@ pub async fn start_scan(
 
     let scan_resources = resources.clone();
     let task = tauri::async_runtime::spawn_blocking(move || {
-        // The legacy browsing experiment intentionally keeps discovery cheap:
-        // enumerate/stat/classify/register only. Pixel dimensions are learned by
-        // the browser when each Image actually loads, matching the original web
-        // implementation instead of front-loading header I/O during traversal.
         let scanner = LocalFilesystemScanner::with_metadata_reader(NoVisualMetadataReader);
         let mut sink = ChannelScanSink::new(on_event, scan_resources);
         scanner.scan(&scan_request, &mut sink, &cancellation)
@@ -446,13 +425,13 @@ mod tests {
     }
 
     #[test]
-    fn cloned_registry_shares_visual_metadata_cache() {
-        let registry = ScanRegistry::default();
-        let clone = registry.clone();
-        assert!(Arc::ptr_eq(
-            &registry.visual_metadata_cache,
-            &clone.visual_metadata_cache
-        ));
+    fn metadata_light_reader_never_opens_image_headers() {
+        assert_eq!(
+            NoVisualMetadataReader
+                .read_visual_metadata("ignored.jpg", &MediaKind::Image)
+                .unwrap(),
+            None
+        );
     }
 
     #[test]
