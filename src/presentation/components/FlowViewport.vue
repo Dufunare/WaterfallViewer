@@ -40,6 +40,8 @@ let minColumn: HTMLElement | null = null;
 let queue: LegacyFlowItem[] = [];
 let queuedIds = new Set<string>();
 let itemStates = new Map<string, LegacyItemState>();
+let activeBatchRemaining = 0;
+let activeBatchEpoch = 0;
 let destroyed = false;
 let loadTimer: number | null = null;
 
@@ -53,6 +55,9 @@ function handleBrowserEvent(event: LegacyFlowBrowserEvent): void {
   snapshot.value = event.snapshot;
 
   if (event.type === "state") {
+    if (isTerminalScanState(event.snapshot.scanState?.status)) {
+      finishPendingProducerBatch();
+    }
     return;
   }
 
@@ -77,6 +82,8 @@ function hardReset(
   layoutEpoch += 1;
   loading = 0;
   renderedCount = 0;
+  activeBatchRemaining = 0;
+  activeBatchEpoch = layoutEpoch;
   activeSessionId = sessionId;
   queue = [];
   queuedIds.clear();
@@ -97,6 +104,8 @@ function softReflow(items: readonly LegacyFlowItem[]): void {
   layoutEpoch += 1;
   loading = 0;
   renderedCount = 0;
+  activeBatchRemaining = 0;
+  activeBatchEpoch = layoutEpoch;
   queue = [];
   queuedIds.clear();
 
@@ -172,16 +181,9 @@ function shortestColumn(): HTMLElement | null {
   );
 }
 
-function loadedEndReference(): HTMLElement | null {
-  if (snapshot.value.layoutMode === "masonry") {
-    minColumn = shortestColumn() ?? minColumn;
-  }
-  return minColumn ?? imgboxElement.value;
-}
-
 function nearLoadedEnd(): boolean {
   const viewport = viewportElement.value;
-  const reference = loadedEndReference();
+  const reference = minColumn ?? imgboxElement.value;
   if (viewport === null || reference === null) {
     return false;
   }
@@ -189,6 +191,9 @@ function nearLoadedEnd(): boolean {
     return true;
   }
 
+  // Keep scroll work equivalent to the legacy page: one frontier read only.
+  // The shortest-column scan happens when an image is appended, never while
+  // native scrolling is in progress.
   return (
     viewport.scrollTop + viewport.clientHeight >=
     reference.scrollHeight - viewport.clientHeight
@@ -196,19 +201,35 @@ function nearLoadedEnd(): boolean {
 }
 
 function loadNext(): void {
-  if (destroyed || loading > 0 || !nearLoadedEnd()) {
+  if (destroyed) {
     return;
   }
 
-  const epoch = layoutEpoch;
-  let consumed = 0;
-  while (consumed < LEGACY_BATCH_SIZE && queue.length > 0) {
+  if (activeBatchRemaining === 0) {
+    if (loading > 0 || !nearLoadedEnd()) {
+      return;
+    }
+    activeBatchRemaining = LEGACY_BATCH_SIZE;
+    activeBatchEpoch = layoutEpoch;
+  }
+
+  if (activeBatchEpoch !== layoutEpoch) {
+    activeBatchRemaining = 0;
+    return;
+  }
+
+  // The supplied frontend awaits Queue.shift() inside a 25-iteration loop.
+  // Preserve that producer/consumer behavior without an unresolved Promise:
+  // when discovery temporarily runs dry, keep the current batch open. Later
+  // append events continue filling the same batch even while earlier images
+  // from it are still loading.
+  while (activeBatchRemaining > 0 && queue.length > 0) {
     const item = queue.shift();
     if (item === undefined) {
       break;
     }
     queuedIds.delete(item.mediaId);
-    consumed += 1;
+    activeBatchRemaining -= 1;
 
     let state = itemStates.get(item.mediaId);
     if (state === undefined) {
@@ -217,7 +238,7 @@ function loadNext(): void {
         img: null,
         wrap: null,
         status: "idle",
-        loadEpoch: epoch,
+        loadEpoch: activeBatchEpoch,
       };
       itemStates.set(item.mediaId, state);
     } else {
@@ -233,9 +254,19 @@ function loadNext(): void {
       continue;
     }
 
-    startImageLoad(state, epoch);
+    startImageLoad(state, activeBatchEpoch);
   }
 
+  if (activeBatchRemaining === 0 && loading === 0) {
+    scheduleLoadNext(0);
+  }
+}
+
+function finishPendingProducerBatch(): void {
+  if (activeBatchRemaining === 0 || queue.length > 0) {
+    return;
+  }
+  activeBatchRemaining = 0;
   if (loading === 0) {
     scheduleLoadNext(0);
   }
@@ -249,7 +280,6 @@ function startImageLoad(state: LegacyItemState, epoch: number): void {
 
   img.alt = state.item.name;
   img.draggable = false;
-  img.decoding = "async";
   img.className = "legacy-image";
   img.dataset.mediaId = state.item.mediaId;
 
@@ -273,7 +303,7 @@ function startImageLoad(state: LegacyItemState, epoch: number): void {
     appendWrap(wrap);
 
     loading = Math.max(0, loading - 1);
-    if (loading === 0) {
+    if (loading === 0 && activeBatchRemaining === 0) {
       loadNext();
     }
   };
@@ -289,8 +319,6 @@ function createWrap(state: LegacyItemState, img: HTMLImageElement): HTMLElement 
   wrap.dataset.mediaId = state.item.mediaId;
   wrap.title = `${state.item.relativePath} — click to select, double-click to open`;
   wrap.appendChild(img);
-  wrap.addEventListener("click", (event) => selectItem(state.item.mediaId, event));
-  wrap.addEventListener("dblclick", () => emit("activate", state.item.mediaId));
   applySelectionClass(wrap, state.item.mediaId);
   return wrap;
 }
@@ -310,12 +338,14 @@ function appendWrap(wrap: HTMLElement): void {
     if (columnElements.length === 0) {
       buildLayoutShell();
     }
-    const target = shortestColumn();
-    if (target === null) {
+    // Match the original loadImg(): remember the column selected immediately
+    // before append. Do not rescan after append; scroll-time loadNext() reuses
+    // this reference and therefore avoids four synchronous offsetHeight reads.
+    minColumn = shortestColumn();
+    if (minColumn === null) {
       return;
     }
-    target.appendChild(wrap);
-    minColumn = shortestColumn() ?? target;
+    minColumn.appendChild(wrap);
     return;
   }
 
@@ -331,11 +361,34 @@ function appendWrap(wrap: HTMLElement): void {
   minColumn = imgbox;
 }
 
-function selectItem(mediaId: string, event: MouseEvent): void {
+function mediaIdFromEvent(event: Event): string | null {
+  const target = event.target;
+  if (!(target instanceof Element)) {
+    return null;
+  }
+  const wrap = target.closest<HTMLElement>(".legacy-wrap[data-media-id]");
+  if (wrap === null || !imgboxElement.value?.contains(wrap)) {
+    return null;
+  }
+  return wrap.dataset.mediaId ?? null;
+}
+
+function handleMediaClick(event: MouseEvent): void {
+  const mediaId = mediaIdFromEvent(event);
+  if (mediaId === null) {
+    return;
+  }
   if (event.ctrlKey || event.metaKey) {
     selection.toggle(mediaId);
   } else {
     selection.replace(mediaId);
+  }
+}
+
+function handleMediaDoubleClick(event: MouseEvent): void {
+  const mediaId = mediaIdFromEvent(event);
+  if (mediaId !== null) {
+    emit("activate", mediaId);
   }
 }
 
@@ -393,6 +446,10 @@ function scrollToStart(): void {
   }
 }
 
+function isTerminalScanState(status: string | undefined): boolean {
+  return status === "finished" || status === "cancelled" || status === "failed";
+}
+
 onMounted(() => {
   destroyed = false;
   buildLayoutShell();
@@ -410,6 +467,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   destroyed = true;
   layoutEpoch += 1;
+  activeBatchRemaining = 0;
   unsubscribeBrowser?.();
   unsubscribeSelection?.();
   resizeObserver?.disconnect();
@@ -427,7 +485,12 @@ onBeforeUnmount(() => {
     aria-label="Flow media browser"
     @scroll.passive="handleScroll"
   >
-    <div ref="imgboxElement" class="legacy-imgbox masonry" />
+    <div
+      ref="imgboxElement"
+      class="legacy-imgbox masonry"
+      @click="handleMediaClick"
+      @dblclick="handleMediaDoubleClick"
+    />
   </section>
 </template>
 
