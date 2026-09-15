@@ -151,12 +151,7 @@ fn serve_request(
     let stream = reader.get_mut();
 
     if method != "GET" && method != "HEAD" {
-        write_empty_response(
-            stream,
-            405,
-            "Method Not Allowed",
-            connection_header,
-        )?;
+        write_empty_response(stream, 405, "Method Not Allowed", connection_header)?;
         return Ok(keep_alive);
     }
 
