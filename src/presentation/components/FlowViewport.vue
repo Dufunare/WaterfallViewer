@@ -1,102 +1,284 @@
 <script setup lang="ts">
-import {
-  computed,
-  onBeforeUnmount,
-  onMounted,
-  ref,
-  shallowRef,
-} from "vue";
+import { onBeforeUnmount, onMounted, ref, shallowRef } from "vue";
 
 import type {
-  BrowserTile,
-  MediaBrowserController,
-} from "../../application/browser/mediaBrowserController";
+  LegacyFlowBrowserController,
+  LegacyFlowBrowserSnapshot,
+  LegacyFlowItem,
+} from "../../application/browser/legacyFlowBrowserController";
 import { useMediaSelection } from "../selectionContext";
 
 const props = defineProps<{
-  browser: MediaBrowserController;
+  browser: LegacyFlowBrowserController;
 }>();
 const emit = defineEmits<{
   activate: [mediaId: string];
 }>();
 
+interface LegacyItemState {
+  item: LegacyFlowItem;
+  img?: HTMLImageElement;
+  wrap?: HTMLElement;
+}
+
 const selection = useMediaSelection();
 const viewportElement = ref<HTMLElement | null>(null);
+const imgboxElement = ref<HTMLElement | null>(null);
 const snapshot = shallowRef(props.browser.snapshot);
-const selectionSnapshot = shallowRef(selection.snapshot);
 
 let unsubscribe: (() => void) | null = null;
-let unsubscribeSelection: (() => void) | null = null;
 let resizeObserver: ResizeObserver | null = null;
-let viewportFrame: number | null = null;
+let activeGeneration = -1;
+let loading = 0;
+let loadingAll = false;
+let renderedCount = 0;
+let columnElements: HTMLElement[] = [];
+let minColumn: HTMLElement | null = null;
+let queue: LegacyFlowItem[] = [];
+let queuedIds = new Set<string>();
+let itemStates = new Map<string, LegacyItemState>();
+let destroyed = false;
+let loadTimer: number | null = null;
 
-const canvasStyle = computed(() => ({
-  height: `${Math.max(1, snapshot.value.totalHeight)}px`,
-}));
-const selectedIds = computed(() => new Set(selectionSnapshot.value.selectedIds));
+const LEGACY_BATCH_SIZE = 25;
+const LEGACY_COLUMN_COUNT = 4;
+const LEGACY_COLUMN_GAP = 10;
+const LEGACY_ROW_GAP = 10;
+const LEGACY_JUSTIFIED_HEIGHT = 220;
 
-function tileStyle(tile: BrowserTile): Record<string, string> {
-  return {
-    width: `${tile.width}px`,
-    height: `${tile.height}px`,
-    transform: `translate3d(${tile.x}px, ${tile.y}px, 0)`,
-  };
+function applySnapshot(next: LegacyFlowBrowserSnapshot): void {
+  snapshot.value = next;
+  if (next.generation !== activeGeneration) {
+    activeGeneration = next.generation;
+    resetFlow(next.items);
+    return;
+  }
+
+  for (const item of next.items) {
+    if (itemStates.has(item.mediaId) || queuedIds.has(item.mediaId)) {
+      continue;
+    }
+    queue.push(item);
+    queuedIds.add(item.mediaId);
+  }
+  loadNext();
 }
 
-function selectTile(tile: BrowserTile, event: MouseEvent): void {
-  if (event.ctrlKey || event.metaKey) {
-    selection.toggle(tile.mediaId);
+function resetFlow(items: readonly LegacyFlowItem[]): void {
+  loading = 0;
+  renderedCount = 0;
+  loadingAll = false;
+  queue = [...items];
+  queuedIds = new Set(items.map((item) => item.mediaId));
+  itemStates = new Map();
+  if (loadTimer !== null) {
+    window.clearTimeout(loadTimer);
+    loadTimer = null;
+  }
+  buildLayoutShell();
+  const viewport = viewportElement.value;
+  if (viewport !== null) {
+    viewport.scrollTop = 0;
+  }
+  loadNext();
+}
+
+function buildLayoutShell(): void {
+  const imgbox = imgboxElement.value;
+  if (imgbox === null) {
+    return;
+  }
+  imgbox.replaceChildren();
+  columnElements = [];
+  minColumn = imgbox;
+
+  if (snapshot.value.layoutMode === "masonry") {
+    imgbox.className = "legacy-imgbox masonry";
+    for (let index = 0; index < LEGACY_COLUMN_COUNT; index += 1) {
+      const column = document.createElement("div");
+      column.className = "legacy-column";
+      imgbox.appendChild(column);
+      columnElements.push(column);
+    }
+    minColumn = columnElements[0] ?? imgbox;
   } else {
-    selection.replace(tile.mediaId);
+    imgbox.className = "legacy-imgbox justified";
   }
 }
 
-function scheduleViewportSync(): void {
-  if (viewportFrame !== null) {
-    return;
+function nearLoadedEnd(): boolean {
+  if (loadingAll) {
+    return true;
   }
-  viewportFrame = window.requestAnimationFrame(() => {
-    viewportFrame = null;
-    syncViewport();
-  });
+  const viewport = viewportElement.value;
+  const reference = minColumn ?? imgboxElement.value;
+  if (viewport === null || reference === null) {
+    return false;
+  }
+
+  // Mirrors the original project's gate:
+  // scrollTop + clientHeight >= shortestColumnHeight - clientHeight.
+  // In other words, do not request another batch until the user is within
+  // roughly one viewport of the currently materialized content frontier.
+  return (
+    viewport.scrollTop + viewport.clientHeight >=
+    reference.scrollHeight - viewport.clientHeight
+  );
 }
 
-function syncViewport(): void {
-  const element = viewportElement.value;
-  if (element === null || element.clientWidth <= 0 || element.clientHeight <= 0) {
+function loadNext(): void {
+  if (destroyed || loading > 0 || !nearLoadedEnd()) {
     return;
   }
 
-  props.browser.setViewport({
-    width: element.clientWidth,
-    height: element.clientHeight,
-    scrollTop: element.scrollTop,
-    devicePixelRatio: Math.max(1, window.devicePixelRatio || 1),
-  });
+  let consumed = 0;
+  while (consumed < LEGACY_BATCH_SIZE && queue.length > 0) {
+    const item = queue.shift();
+    if (item === undefined) {
+      break;
+    }
+    queuedIds.delete(item.mediaId);
+    consumed += 1;
+
+    let state = itemStates.get(item.mediaId);
+    if (state === undefined) {
+      state = { item };
+      itemStates.set(item.mediaId, state);
+    }
+
+    if (state.wrap !== undefined) {
+      appendWrap(state.wrap);
+      continue;
+    }
+
+    const img = state.img ?? new Image();
+    state.img = img;
+    img.alt = item.name;
+    img.draggable = false;
+    img.decoding = "async";
+    img.className = "legacy-image";
+    img.dataset.mediaId = item.mediaId;
+
+    loading += 1;
+    let completed = false;
+    const onComplete = () => {
+      if (completed || destroyed) {
+        return;
+      }
+      completed = true;
+      img.onload = null;
+      img.onerror = null;
+
+      const wrap = document.createElement("figure");
+      wrap.className = "legacy-wrap";
+      wrap.dataset.mediaId = item.mediaId;
+      wrap.title = `${item.relativePath} — click to select, double-click to open`;
+      wrap.appendChild(img);
+      wrap.addEventListener("click", (event) => selectItem(item.mediaId, event));
+      wrap.addEventListener("dblclick", () => emit("activate", item.mediaId));
+      state!.wrap = wrap;
+
+      appendWrap(wrap);
+      loading -= 1;
+      loadNext();
+    };
+
+    img.onload = onComplete;
+    img.onerror = onComplete;
+    img.src = item.resourceUri;
+  }
+
+  // Preserve the original `setTimeout(loadNext, 0)` tail call. It lets cached
+  // images / wrapper reuse advance without recursively monopolizing one task.
+  scheduleLoadNext(0);
+}
+
+function appendWrap(wrap: HTMLElement): void {
+  const imgbox = imgboxElement.value;
+  if (imgbox === null) {
+    return;
+  }
+
+  renderedCount += 1;
+  wrap.id = `legacy-img-${renderedCount}`;
+
+  if (snapshot.value.layoutMode === "masonry") {
+    if (columnElements.length === 0) {
+      buildLayoutShell();
+    }
+    minColumn = columnElements.reduce((shortest, column) =>
+      shortest.offsetHeight <= column.offsetHeight ? shortest : column,
+    );
+    minColumn.appendChild(wrap);
+    return;
+  }
+
+  const img = wrap.firstElementChild;
+  if (img instanceof HTMLImageElement) {
+    const width = img.naturalWidth || 1;
+    const height = img.naturalHeight || 1;
+    const ratio = width / height;
+    wrap.style.flexBasis = `${ratio * LEGACY_JUSTIFIED_HEIGHT}px`;
+    wrap.style.flexGrow = String(ratio);
+  }
+  imgbox.appendChild(wrap);
+  minColumn = imgbox;
+}
+
+function selectItem(mediaId: string, event: MouseEvent): void {
+  if (event.ctrlKey || event.metaKey) {
+    selection.toggle(mediaId);
+  } else {
+    selection.replace(mediaId);
+  }
+}
+
+function handleScroll(): void {
+  // Intentionally no viewport/controller synchronization here. Existing DOM is
+  // scrolled natively; scroll only checks whether the append frontier is near.
+  loadNext();
+}
+
+function handleResize(): void {
+  // The original implementation only calls loadNext on resize. It does not
+  // continuously relayout or virtualize existing image nodes while scrolling.
+  loadNext();
+}
+
+function scheduleLoadNext(delay: number): void {
+  if (loadTimer !== null || destroyed) {
+    return;
+  }
+  loadTimer = window.setTimeout(() => {
+    loadTimer = null;
+    loadNext();
+  }, delay);
 }
 
 onMounted(() => {
-  unsubscribe = props.browser.subscribe((nextSnapshot) => {
-    snapshot.value = nextSnapshot;
-  });
-  unsubscribeSelection = selection.subscribe((nextSnapshot) => {
-    selectionSnapshot.value = nextSnapshot;
-  });
-
-  const element = viewportElement.value;
-  if (element !== null) {
-    resizeObserver = new ResizeObserver(scheduleViewportSync);
-    resizeObserver.observe(element);
+  destroyed = false;
+  buildLayoutShell();
+  unsubscribe = props.browser.subscribe(applySnapshot);
+  const viewport = viewportElement.value;
+  if (viewport !== null) {
+    resizeObserver = new ResizeObserver(handleResize);
+    resizeObserver.observe(viewport);
   }
-  scheduleViewportSync();
+  loadNext();
 });
 
 onBeforeUnmount(() => {
+  destroyed = true;
   unsubscribe?.();
-  unsubscribeSelection?.();
   resizeObserver?.disconnect();
-  if (viewportFrame !== null) {
-    window.cancelAnimationFrame(viewportFrame);
+  if (loadTimer !== null) {
+    window.clearTimeout(loadTimer);
+  }
+  for (const state of itemStates.values()) {
+    if (state.img !== undefined) {
+      state.img.onload = null;
+      state.img.onerror = null;
+    }
   }
 });
 </script>
@@ -104,136 +286,82 @@ onBeforeUnmount(() => {
 <template>
   <section
     ref="viewportElement"
-    class="flow-viewport"
+    class="legacy-flow-viewport"
     aria-label="Flow media browser"
-    @scroll.passive="scheduleViewportSync"
+    @scroll.passive="handleScroll"
   >
-    <div class="flow-canvas" :style="canvasStyle">
-      <figure
-        v-for="tile in snapshot.tiles"
-        :key="tile.mediaId"
-        class="flow-tile"
-        :class="{
-          overscan: tile.priority === 'overscan',
-          selected: selectedIds.has(tile.mediaId),
-        }"
-        :style="tileStyle(tile)"
-        :title="`${tile.relativePath} — click to select, double-click to open`"
-        @click="selectTile(tile, $event)"
-        @dblclick="emit('activate', tile.mediaId)"
-      >
-        <img
-          v-if="tile.thumbnailStatus === 'ready' && tile.thumbnailUri"
-          class="flow-image"
-          :src="tile.thumbnailUri"
-          :alt="tile.name"
-          decoding="async"
-          loading="eager"
-          draggable="false"
-        />
-        <div v-else class="flow-placeholder">
-          <span v-if="tile.thumbnailStatus === 'error'" class="placeholder-label">
-            Preview unavailable
-          </span>
-          <span v-else-if="tile.thumbnailStatus === 'unsupported'" class="placeholder-label">
-            {{ tile.kind }}
-          </span>
-          <span v-else class="loading-pulse" aria-hidden="true" />
-        </div>
-      </figure>
-    </div>
+    <div ref="imgboxElement" class="legacy-imgbox masonry" />
   </section>
 </template>
 
 <style scoped>
-.flow-viewport {
+.legacy-flow-viewport {
   position: relative;
   width: 100%;
   height: 100%;
   min-height: 0;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
-  contain: strict;
+  contain: layout paint style;
 }
 
-.flow-canvas {
-  position: relative;
+.legacy-imgbox.masonry {
+  display: flex;
+  align-items: flex-start;
+  gap: v-bind('LEGACY_COLUMN_GAP + "px"');
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.legacy-column {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: v-bind('LEGACY_ROW_GAP + "px"');
+}
+
+.legacy-imgbox.justified {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: v-bind('LEGACY_ROW_GAP + "px"') v-bind('LEGACY_COLUMN_GAP + "px"');
   width: 100%;
 }
 
-.flow-tile {
-  position: absolute;
-  top: 0;
-  left: 0;
+:deep(.legacy-wrap) {
+  position: relative;
   margin: 0;
   overflow: hidden;
+  min-width: 0;
   background: var(--wf-surface-raised);
   contain: layout paint style;
   content-visibility: auto;
-  cursor: default;
 }
 
-.flow-tile.selected {
-  z-index: 1;
-  box-shadow: inset 0 0 0 2px var(--wf-accent);
-}
-
-.flow-tile.overscan {
-  pointer-events: none;
-}
-
-.flow-image {
+.legacy-imgbox.masonry :deep(.legacy-wrap) {
   width: 100%;
-  height: 100%;
+  flex: 0 0 auto;
+}
+
+.legacy-imgbox.justified :deep(.legacy-wrap) {
+  height: v-bind('LEGACY_JUSTIFIED_HEIGHT + "px"');
+  min-width: 0;
+}
+
+:deep(.legacy-image) {
   display: block;
-  object-fit: cover;
+  width: 100%;
+  height: auto;
   user-select: none;
   -webkit-user-drag: none;
 }
 
-.flow-placeholder {
+.legacy-imgbox.justified :deep(.legacy-image) {
   width: 100%;
   height: 100%;
-  display: grid;
-  place-items: center;
-  background:
-    linear-gradient(135deg, var(--wf-placeholder-sheen), transparent 60%),
-    var(--wf-surface-raised);
-}
-
-.placeholder-label {
-  max-width: calc(100% - 24px);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--wf-text-muted);
-  font-size: 0.72rem;
-  text-transform: capitalize;
-  white-space: nowrap;
-}
-
-.loading-pulse {
-  width: 26px;
-  height: 3px;
-  border-radius: 999px;
-  background: var(--wf-loading-indicator);
-  animation: pulse 1.1s ease-in-out infinite alternate;
-}
-
-@keyframes pulse {
-  from {
-    opacity: 0.35;
-    transform: scaleX(0.7);
-  }
-  to {
-    opacity: 1;
-    transform: scaleX(1);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .loading-pulse {
-    animation: none;
-  }
+  object-fit: cover;
 }
 </style>
