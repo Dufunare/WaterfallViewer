@@ -3,7 +3,7 @@ import { onBeforeUnmount, onMounted, ref, shallowRef } from "vue";
 
 import type {
   LegacyFlowBrowserController,
-  LegacyFlowBrowserSnapshot,
+  LegacyFlowBrowserEvent,
   LegacyFlowItem,
 } from "../../application/browser/legacyFlowBrowserController";
 import { useMediaSelection } from "../selectionContext";
@@ -32,7 +32,6 @@ let unsubscribeBrowser: (() => void) | null = null;
 let unsubscribeSelection: (() => void) | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let activeSessionId: string | null = null;
-let activeGeneration = -1;
 let layoutEpoch = 0;
 let loading = 0;
 let renderedCount = 0;
@@ -50,31 +49,35 @@ const LEGACY_COLUMN_GAP = 10;
 const LEGACY_ROW_GAP = 10;
 const LEGACY_JUSTIFIED_HEIGHT = 220;
 
-function applySnapshot(next: LegacyFlowBrowserSnapshot): void {
-  snapshot.value = next;
+function handleBrowserEvent(event: LegacyFlowBrowserEvent): void {
+  snapshot.value = event.snapshot;
 
-  if (next.sessionId !== activeSessionId) {
-    hardReset(next);
+  if (event.type === "state") {
     return;
   }
 
-  if (next.generation !== activeGeneration) {
-    activeGeneration = next.generation;
-    softReflow(next.items);
+  if (event.type === "append") {
+    appendNewQueueItems(event.items);
+    loadNext();
     return;
   }
 
-  appendNewQueueItems(next.items);
-  loadNext();
+  if (event.snapshot.sessionId !== activeSessionId) {
+    hardReset(event.snapshot.sessionId, event.items);
+  } else {
+    softReflow(event.items);
+  }
 }
 
-function hardReset(next: LegacyFlowBrowserSnapshot): void {
+function hardReset(
+  sessionId: string | null,
+  items: readonly LegacyFlowItem[],
+): void {
   cancelScheduledLoad();
   layoutEpoch += 1;
   loading = 0;
   renderedCount = 0;
-  activeSessionId = next.sessionId;
-  activeGeneration = next.generation;
+  activeSessionId = sessionId;
   queue = [];
   queuedIds.clear();
 
@@ -85,7 +88,7 @@ function hardReset(next: LegacyFlowBrowserSnapshot): void {
 
   buildLayoutShell();
   scrollToStart();
-  appendNewQueueItems(next.items);
+  appendNewQueueItems(items);
   loadNext();
 }
 
@@ -97,9 +100,8 @@ function softReflow(items: readonly LegacyFlowItem[]): void {
   queue = [];
   queuedIds.clear();
 
-  // Keep completed Image/wrapper objects exactly like the original allData
-  // cache. Only in-flight images are reset because their old callbacks belong
-  // to a layout epoch that no longer exists.
+  // Preserve completed Image/wrapper nodes across sort/filter/layout changes.
+  // This mirrors the supplied frontend's allData.{img,wrap} reuse.
   for (const state of itemStates.values()) {
     if (state.status === "loading") {
       detachImageCallbacks(state);
@@ -143,8 +145,6 @@ function buildLayoutShell(): void {
     return;
   }
 
-  // Detach wrappers but do not destroy them. Completed wrappers remain owned by
-  // itemStates and can be appended again during reflow without another decode.
   imgbox.replaceChildren();
   columnElements = [];
   minColumn = imgbox;
@@ -173,8 +173,6 @@ function nearLoadedEnd(): boolean {
     return true;
   }
 
-  // Same frontier rule as the supplied frontend:
-  // scrollTop + clientHeight >= shortestColumnHeight - clientHeight.
   return (
     viewport.scrollTop + viewport.clientHeight >=
     reference.scrollHeight - viewport.clientHeight
@@ -216,16 +214,12 @@ function loadNext(): void {
     }
 
     if (state.status === "loading") {
-      // A current-epoch loading state should not normally be queued twice, but
-      // do not start a duplicate request if it happens during a scan update.
       continue;
     }
 
     startImageLoad(state, epoch);
   }
 
-  // Matches the old zero-delay tail call. If all 25 entries were already cached
-  // wrappers, the next batch can progress without deep synchronous recursion.
   if (loading === 0) {
     scheduleLoadNext(0);
   }
@@ -253,8 +247,6 @@ function startImageLoad(state: LegacyItemState, epoch: number): void {
     img.onload = null;
     img.onerror = null;
 
-    // A reflow can invalidate an in-flight request. Its browser cache may still
-    // benefit later, but the obsolete callback must not mutate the new layout.
     if (state.loadEpoch !== layoutEpoch || epoch !== layoutEpoch) {
       return;
     }
@@ -345,8 +337,6 @@ function applySelectionClass(wrap: HTMLElement, mediaId: string): void {
 }
 
 function handleScroll(): void {
-  // Intentionally tiny. Existing DOM scrolls natively and no controller state,
-  // spatial index or Vue list is updated here.
   loadNext();
 }
 
@@ -388,7 +378,7 @@ function scrollToStart(): void {
 onMounted(() => {
   destroyed = false;
   buildLayoutShell();
-  unsubscribeBrowser = props.browser.subscribe(applySnapshot);
+  unsubscribeBrowser = props.browser.subscribe(handleBrowserEvent);
   unsubscribeSelection = selection.subscribe(refreshSelectionClasses);
 
   const viewport = viewportElement.value;
