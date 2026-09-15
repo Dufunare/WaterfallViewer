@@ -22,6 +22,8 @@ export interface ViewerRuntimePorts {
   sourcePicker: SourcePickerPort;
   representation: MediaRepresentationPort;
   resource: MediaResourcePort;
+  /** Optional Flow-only source transport used by architecture experiments. */
+  flowResource?: MediaResourcePort;
   detail: MediaDetailPort;
 }
 
@@ -76,13 +78,11 @@ export function createViewerRuntime(
   );
 
   // Experimental Flow path. It deliberately bypasses MediaBrowserController
-  // and the derived-thumbnail scheduler: the presentation receives opaque
-  // source URIs and reproduces the original frontend's append-only `Image`
-  // lifecycle and batch gate. Canvas remains on the production architecture so
-  // the experiment isolates only Flow behavior.
+  // and the derived-thumbnail scheduler. A separate Flow resource port keeps
+  // transport experiments from changing Canvas or preview behavior.
   const flowBrowser = new LegacyFlowBrowserController(
     sessionController,
-    ports.resource,
+    ports.flowResource ?? ports.resource,
   );
 
   const canvasScene = new CanvasSceneModel({
