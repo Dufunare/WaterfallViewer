@@ -190,7 +190,7 @@ onBeforeUnmount(() => {
           :src="tile.thumbnailUri"
           :alt="tile.name"
           decoding="async"
-          :loading="tile.priority === 'visible' ? 'eager' : 'lazy'"
+          loading="eager"
           :fetchpriority="tile.priority === 'visible' ? 'high' : 'low'"
           draggable="false"
         />
