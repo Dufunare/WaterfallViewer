@@ -12,12 +12,7 @@ export class TauriMediaResourcePort implements MediaResourcePort {
   }
 
   uriFor(resourceKey: string): string {
-    if (resourceKey.trim().length === 0) {
-      throw new RangeError("resourceKey must not be empty");
-    }
-    if (!/^\d+\/\d+$/.test(resourceKey)) {
-      throw new RangeError("resourceKey has an invalid format");
-    }
+    validateResourceKey(resourceKey);
 
     if (this.#loopbackOrigins.length > 0) {
       const origin = this.#loopbackOrigins[resourceShard(resourceKey, this.#loopbackOrigins.length)];
@@ -29,9 +24,22 @@ export class TauriMediaResourcePort implements MediaResourcePort {
   }
 }
 
-export async function createTauriMediaResourcePort(): Promise<TauriMediaResourcePort> {
+/** Production-compatible resource transport used by Canvas and preview. */
+export const tauriMediaResourcePort = new TauriMediaResourcePort();
+
+/** Experimental source transport used only by legacy Flow. */
+export async function createTauriFlowMediaResourcePort(): Promise<TauriMediaResourcePort> {
   const origins = await invoke<string[]>("get_media_http_origins");
   return new TauriMediaResourcePort(origins);
+}
+
+function validateResourceKey(resourceKey: string): void {
+  if (resourceKey.trim().length === 0) {
+    throw new RangeError("resourceKey must not be empty");
+  }
+  if (!/^\d+\/\d+$/.test(resourceKey)) {
+    throw new RangeError("resourceKey has an invalid format");
+  }
 }
 
 function normalizeOrigin(value: string): string {
