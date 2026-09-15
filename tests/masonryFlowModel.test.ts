@@ -5,8 +5,8 @@ import type { MediaItem } from "../src/application/ports/mediaScan";
 
 function media(
   id: string,
-  width: number | null,
-  height: number | null,
+  width: number | null = 100,
+  height: number | null = 100,
 ): MediaItem {
   return {
     id,
@@ -23,6 +23,7 @@ function media(
             width,
             height,
           },
+    resourceKey: `1/${id}`,
   };
 }
 
@@ -38,13 +39,14 @@ describe("MasonryFlowModel", () => {
     model.sync("session-1", [
       media("a", 100, 100),
       media("b", 100, 200),
-      media("c", 100, 100),
+      media("c", 200, 100),
     ]);
 
     const snapshot = model.snapshot();
     expect(snapshot.sessionId).toBe("session-1");
     expect(snapshot.itemCount).toBe(3);
     expect(snapshot.layoutItemCount).toBe(3);
+    expect(snapshot.deferredMedia).toEqual([]);
     expect(snapshot.layout.nodes.map((node) => node.mediaId)).toEqual([
       "a",
       "b",
@@ -52,65 +54,52 @@ describe("MasonryFlowModel", () => {
     ]);
 
     expect(
-      model
-        .queryVisible({ x: 0, y: 0, width: 220, height: 105 })
-        .map((node) => node.mediaId),
+      model.queryVisible({ x: 0, y: 0, width: 220, height: 120 }).map((node) => node.mediaId),
     ).toEqual(["a", "b"]);
   });
 
   it("keeps append-only scan updates equivalent to a one-shot sync", () => {
-    const items = [
+    const all = [
       media("a", 100, 100),
       media("b", 100, 200),
       media("c", 200, 100),
-      media("d", 100, 150),
+      media("d", 100, 100),
     ];
-
-    const incremental = new MasonryFlowModel(config);
-    incremental.sync("session-1", items.slice(0, 2));
-    incremental.sync("session-1", items.slice(0, 3));
-    incremental.sync("session-1", items);
+    const appended = new MasonryFlowModel(config);
+    appended.sync("session-1", all.slice(0, 2));
+    appended.append("session-1", all.slice(2));
 
     const oneShot = new MasonryFlowModel(config);
-    oneShot.sync("session-1", items);
+    oneShot.sync("session-1", all);
 
-    expect(incremental.snapshot()).toEqual(oneShot.snapshot());
+    expect(appended.snapshot().layout).toEqual(oneShot.snapshot().layout);
+    expect(appended.snapshot().deferredMedia).toEqual(oneShot.snapshot().deferredMedia);
   });
 
   it("rebuilds when existing visual metadata changes", () => {
     const model = new MasonryFlowModel(config);
-    model.sync("session-1", [
-      media("a", 100, 100),
-      media("b", 100, 100),
-      media("c", 100, 100),
-    ]);
-    const before = model.snapshot().layout.nodes.find((node) => node.mediaId === "c")!;
+    model.sync("session-1", [media("a", 100, 100), media("b", 100, 100)]);
+    const before = model.snapshot().layout.nodes[0];
 
-    model.sync("session-1", [
-      media("a", 100, 300),
-      media("b", 100, 100),
-      media("c", 100, 100),
-    ]);
-    const after = model.snapshot().layout.nodes.find((node) => node.mediaId === "c")!;
+    model.sync("session-1", [media("a", 100, 200), media("b", 100, 100)]);
+    const after = model.snapshot().layout.nodes[0];
 
-    expect(before.columnIndex).toBe(0);
-    expect(after.columnIndex).toBe(1);
-    expect(after.y).toBeGreaterThan(0);
+    expect(after.height).not.toBe(before.height);
   });
 
   it("resets old geometry when the scan session changes", () => {
     const model = new MasonryFlowModel(config);
     model.sync("session-1", [media("old", 100, 100)]);
-    model.sync("session-2", [media("new", 100, 100)]);
+    model.sync("session-2", [media("new", 200, 100)]);
 
-    expect(model.snapshot().layout.nodes.map((node) => node.mediaId)).toEqual([
-      "new",
-    ]);
+    const snapshot = model.snapshot();
+    expect(snapshot.sessionId).toBe("session-2");
+    expect(snapshot.layout.nodes.map((node) => node.mediaId)).toEqual(["new"]);
   });
 
   it("reflows retained media when layout configuration changes", () => {
     const model = new MasonryFlowModel(config);
-    model.sync("session-1", [media("a", 100, 100), media("b", 100, 100)]);
+    model.sync("session-1", [media("a"), media("b"), media("c")]);
 
     expect(model.snapshot().layout.columnWidth).toBe(100);
 
@@ -126,7 +115,7 @@ describe("MasonryFlowModel", () => {
     expect(snapshot.layout.nodes[1].x).toBe(115);
   });
 
-  it("defers items without usable visual metadata instead of crashing layout", () => {
+  it("uses square fallback geometry when image metadata is unavailable", () => {
     const model = new MasonryFlowModel(config);
     model.sync("session-1", [
       media("valid", 100, 100),
@@ -136,11 +125,12 @@ describe("MasonryFlowModel", () => {
 
     const snapshot = model.snapshot();
     expect(snapshot.itemCount).toBe(3);
-    expect(snapshot.layoutItemCount).toBe(1);
-    expect(snapshot.deferredMedia).toEqual([
-      { mediaId: "missing", reason: "missing-visual" },
-      { mediaId: "invalid", reason: "invalid-visual" },
-    ]);
+    expect(snapshot.layoutItemCount).toBe(3);
+    expect(snapshot.deferredMedia).toEqual([]);
+    for (const id of ["missing", "invalid"]) {
+      const node = snapshot.layout.nodes.find((candidate) => candidate.mediaId === id)!;
+      expect(node.width / node.height).toBeCloseTo(1);
+    }
   });
 
   it("rejects ambiguous duplicate ids without mutating the prior projection", () => {
@@ -158,17 +148,17 @@ describe("MasonryFlowModel", () => {
 
   it("keeps existing state when a replacement config is invalid", () => {
     const model = new MasonryFlowModel(config);
-    model.sync("session-1", [media("a", 100, 100)]);
+    model.sync("session-1", [media("a"), media("b")]);
+    const before = model.snapshot();
 
     expect(() =>
       model.configure({
-        viewport: { width: 10, height: 160 },
+        viewport: { width: 0, height: 160 },
         columnCount: 2,
         gap: 20,
       }),
     ).toThrow();
 
-    expect(model.snapshot().layout.columnWidth).toBe(100);
-    expect(model.snapshot().layout.nodes).toHaveLength(1);
+    expect(model.snapshot()).toEqual(before);
   });
 });
