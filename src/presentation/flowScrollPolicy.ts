@@ -11,12 +11,18 @@ export interface FlowScrollSample {
   recentWheel?: boolean;
 }
 
+export interface FlowViewportSyncSample {
+  syncedScrollTop: number;
+  scrollTop: number;
+  viewportHeight: number;
+}
+
 /**
  * A scrollbar-thumb drag can traverse many cold viewports in only a few frames.
  * Loading media for every transient viewport wastes disk I/O, custom-protocol
  * responses and Chromium decode work. Flow treats only genuinely deep/fast
  * movements as scrubbing. Moderate drags stay in continuous-canvas mode and are
- * served from the retained warm render window.
+ * served from already materialized tiles.
  */
 export const FLOW_SCRUB_SETTLE_MS = 90;
 
@@ -26,6 +32,15 @@ export const FLOW_SCRUB_SETTLE_MS = 90;
  * continuous-browse mode for this short grace window.
  */
 export const FLOW_WHEEL_ACTIVITY_GRACE_MS = 180;
+
+/**
+ * Native scrolling should move already-mounted content without forcing the
+ * controller/Vue tree to rebuild every frame. Refresh the viewport only after
+ * the user has crossed a substantial fraction of one screen, then do one final
+ * settled refresh for small residual movement.
+ */
+export const FLOW_VIEWPORT_SYNC_DISTANCE_SCREENS = 0.55;
+export const FLOW_VIEWPORT_SETTLE_SYNC_MS = 64;
 
 const SCRUB_JUMP_SCREENS = 2;
 const SCRUB_VELOCITY_PX_PER_MS = 12;
@@ -45,6 +60,17 @@ export function shouldEnterFlowScrub(sample: FlowScrollSample): boolean {
   const velocity = distance / sample.elapsedMs;
 
   return distance >= jumpThreshold || velocity >= SCRUB_VELOCITY_PX_PER_MS;
+}
+
+export function shouldSyncFlowViewport(sample: FlowViewportSyncSample): boolean {
+  requireFiniteNonNegative(sample.syncedScrollTop, "syncedScrollTop");
+  requireFiniteNonNegative(sample.scrollTop, "scrollTop");
+  requireFinitePositive(sample.viewportHeight, "viewportHeight");
+
+  return (
+    Math.abs(sample.scrollTop - sample.syncedScrollTop) >=
+    sample.viewportHeight * FLOW_VIEWPORT_SYNC_DISTANCE_SCREENS
+  );
 }
 
 function requireFinitePositive(value: number, name: string): void {
