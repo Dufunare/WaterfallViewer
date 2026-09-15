@@ -17,8 +17,10 @@ const emit = defineEmits<{
 
 interface LegacyItemState {
   item: LegacyFlowItem;
-  img?: HTMLImageElement;
-  wrap?: HTMLElement;
+  img: HTMLImageElement | null;
+  wrap: HTMLElement | null;
+  status: "idle" | "loading" | "ready";
+  loadEpoch: number;
 }
 
 const selection = useMediaSelection();
@@ -26,11 +28,13 @@ const viewportElement = ref<HTMLElement | null>(null);
 const imgboxElement = ref<HTMLElement | null>(null);
 const snapshot = shallowRef(props.browser.snapshot);
 
-let unsubscribe: (() => void) | null = null;
+let unsubscribeBrowser: (() => void) | null = null;
+let unsubscribeSelection: (() => void) | null = null;
 let resizeObserver: ResizeObserver | null = null;
+let activeSessionId: string | null = null;
 let activeGeneration = -1;
+let layoutEpoch = 0;
 let loading = 0;
-let loadingAll = false;
 let renderedCount = 0;
 let columnElements: HTMLElement[] = [];
 let minColumn: HTMLElement | null = null;
@@ -48,15 +52,69 @@ const LEGACY_JUSTIFIED_HEIGHT = 220;
 
 function applySnapshot(next: LegacyFlowBrowserSnapshot): void {
   snapshot.value = next;
-  if (next.generation !== activeGeneration) {
-    activeGeneration = next.generation;
-    resetFlow(next.items);
+
+  if (next.sessionId !== activeSessionId) {
+    hardReset(next);
     return;
   }
 
-  for (const item of next.items) {
-    if (itemStates.has(item.mediaId) || queuedIds.has(item.mediaId)) {
-      continue;
+  if (next.generation !== activeGeneration) {
+    activeGeneration = next.generation;
+    softReflow(next.items);
+    return;
+  }
+
+  appendNewQueueItems(next.items);
+  loadNext();
+}
+
+function hardReset(next: LegacyFlowBrowserSnapshot): void {
+  cancelScheduledLoad();
+  layoutEpoch += 1;
+  loading = 0;
+  renderedCount = 0;
+  activeSessionId = next.sessionId;
+  activeGeneration = next.generation;
+  queue = [];
+  queuedIds.clear();
+
+  for (const state of itemStates.values()) {
+    detachImageCallbacks(state);
+  }
+  itemStates.clear();
+
+  buildLayoutShell();
+  scrollToStart();
+  appendNewQueueItems(next.items);
+  loadNext();
+}
+
+function softReflow(items: readonly LegacyFlowItem[]): void {
+  cancelScheduledLoad();
+  layoutEpoch += 1;
+  loading = 0;
+  renderedCount = 0;
+  queue = [];
+  queuedIds.clear();
+
+  // Keep completed Image/wrapper objects exactly like the original allData
+  // cache. Only in-flight images are reset because their old callbacks belong
+  // to a layout epoch that no longer exists.
+  for (const state of itemStates.values()) {
+    if (state.status === "loading") {
+      detachImageCallbacks(state);
+      state.status = "idle";
+      state.img = null;
+      state.loadEpoch = layoutEpoch;
+    }
+  }
+
+  buildLayoutShell();
+  scrollToStart();
+  for (const item of items) {
+    const existing = itemStates.get(item.mediaId);
+    if (existing !== undefined) {
+      existing.item = item;
     }
     queue.push(item);
     queuedIds.add(item.mediaId);
@@ -64,23 +122,19 @@ function applySnapshot(next: LegacyFlowBrowserSnapshot): void {
   loadNext();
 }
 
-function resetFlow(items: readonly LegacyFlowItem[]): void {
-  loading = 0;
-  renderedCount = 0;
-  loadingAll = false;
-  queue = [...items];
-  queuedIds = new Set(items.map((item) => item.mediaId));
-  itemStates = new Map();
-  if (loadTimer !== null) {
-    window.clearTimeout(loadTimer);
-    loadTimer = null;
+function appendNewQueueItems(items: readonly LegacyFlowItem[]): void {
+  for (const item of items) {
+    const state = itemStates.get(item.mediaId);
+    if (state !== undefined) {
+      state.item = item;
+      continue;
+    }
+    if (queuedIds.has(item.mediaId)) {
+      continue;
+    }
+    queue.push(item);
+    queuedIds.add(item.mediaId);
   }
-  buildLayoutShell();
-  const viewport = viewportElement.value;
-  if (viewport !== null) {
-    viewport.scrollTop = 0;
-  }
-  loadNext();
 }
 
 function buildLayoutShell(): void {
@@ -88,6 +142,9 @@ function buildLayoutShell(): void {
   if (imgbox === null) {
     return;
   }
+
+  // Detach wrappers but do not destroy them. Completed wrappers remain owned by
+  // itemStates and can be appended again during reflow without another decode.
   imgbox.replaceChildren();
   columnElements = [];
   minColumn = imgbox;
@@ -107,19 +164,17 @@ function buildLayoutShell(): void {
 }
 
 function nearLoadedEnd(): boolean {
-  if (loadingAll) {
-    return true;
-  }
   const viewport = viewportElement.value;
   const reference = minColumn ?? imgboxElement.value;
   if (viewport === null || reference === null) {
     return false;
   }
+  if (renderedCount === 0) {
+    return true;
+  }
 
-  // Mirrors the original project's gate:
+  // Same frontier rule as the supplied frontend:
   // scrollTop + clientHeight >= shortestColumnHeight - clientHeight.
-  // In other words, do not request another batch until the user is within
-  // roughly one viewport of the currently materialized content frontier.
   return (
     viewport.scrollTop + viewport.clientHeight >=
     reference.scrollHeight - viewport.clientHeight
@@ -131,6 +186,7 @@ function loadNext(): void {
     return;
   }
 
+  const epoch = layoutEpoch;
   let consumed = 0;
   while (consumed < LEGACY_BATCH_SIZE && queue.length > 0) {
     const item = queue.shift();
@@ -142,55 +198,93 @@ function loadNext(): void {
 
     let state = itemStates.get(item.mediaId);
     if (state === undefined) {
-      state = { item };
+      state = {
+        item,
+        img: null,
+        wrap: null,
+        status: "idle",
+        loadEpoch: epoch,
+      };
       itemStates.set(item.mediaId, state);
+    } else {
+      state.item = item;
     }
 
-    if (state.wrap !== undefined) {
+    if (state.status === "ready" && state.wrap !== null) {
       appendWrap(state.wrap);
       continue;
     }
 
-    const img = state.img ?? new Image();
-    state.img = img;
-    img.alt = item.name;
-    img.draggable = false;
-    img.decoding = "async";
-    img.className = "legacy-image";
-    img.dataset.mediaId = item.mediaId;
+    if (state.status === "loading") {
+      // A current-epoch loading state should not normally be queued twice, but
+      // do not start a duplicate request if it happens during a scan update.
+      continue;
+    }
 
-    loading += 1;
-    let completed = false;
-    const onComplete = () => {
-      if (completed || destroyed) {
-        return;
-      }
-      completed = true;
-      img.onload = null;
-      img.onerror = null;
-
-      const wrap = document.createElement("figure");
-      wrap.className = "legacy-wrap";
-      wrap.dataset.mediaId = item.mediaId;
-      wrap.title = `${item.relativePath} — click to select, double-click to open`;
-      wrap.appendChild(img);
-      wrap.addEventListener("click", (event) => selectItem(item.mediaId, event));
-      wrap.addEventListener("dblclick", () => emit("activate", item.mediaId));
-      state!.wrap = wrap;
-
-      appendWrap(wrap);
-      loading -= 1;
-      loadNext();
-    };
-
-    img.onload = onComplete;
-    img.onerror = onComplete;
-    img.src = item.resourceUri;
+    startImageLoad(state, epoch);
   }
 
-  // Preserve the original `setTimeout(loadNext, 0)` tail call. It lets cached
-  // images / wrapper reuse advance without recursively monopolizing one task.
-  scheduleLoadNext(0);
+  // Matches the old zero-delay tail call. If all 25 entries were already cached
+  // wrappers, the next batch can progress without deep synchronous recursion.
+  if (loading === 0) {
+    scheduleLoadNext(0);
+  }
+}
+
+function startImageLoad(state: LegacyItemState, epoch: number): void {
+  const img = new Image();
+  state.img = img;
+  state.status = "loading";
+  state.loadEpoch = epoch;
+
+  img.alt = state.item.name;
+  img.draggable = false;
+  img.decoding = "async";
+  img.className = "legacy-image";
+  img.dataset.mediaId = state.item.mediaId;
+
+  loading += 1;
+  let completed = false;
+  const onComplete = () => {
+    if (completed || destroyed) {
+      return;
+    }
+    completed = true;
+    img.onload = null;
+    img.onerror = null;
+
+    // A reflow can invalidate an in-flight request. Its browser cache may still
+    // benefit later, but the obsolete callback must not mutate the new layout.
+    if (state.loadEpoch !== layoutEpoch || epoch !== layoutEpoch) {
+      return;
+    }
+
+    const wrap = createWrap(state, img);
+    state.wrap = wrap;
+    state.status = "ready";
+    appendWrap(wrap);
+
+    loading = Math.max(0, loading - 1);
+    if (loading === 0) {
+      loadNext();
+    }
+  };
+
+  img.onload = onComplete;
+  img.onerror = onComplete;
+  img.src = state.item.resourceUri;
+}
+
+function createWrap(state: LegacyItemState, img: HTMLImageElement): HTMLElement {
+  const wrap = document.createElement("figure");
+  wrap.className = "legacy-wrap";
+  wrap.dataset.mediaId = state.item.mediaId;
+  wrap.title = `${state.item.relativePath} — click to select, double-click to open`;
+  wrap.appendChild(img);
+  wrap.addEventListener("click", (event) => selectItem(state.item.mediaId, event));
+  wrap.addEventListener("dblclick", () => emit("activate", state.item.mediaId));
+  applySelectionClass(wrap, state.item.mediaId);
+  return wrap;
 }
 
 function appendWrap(wrap: HTMLElement): void {
@@ -201,6 +295,8 @@ function appendWrap(wrap: HTMLElement): void {
 
   renderedCount += 1;
   wrap.id = `legacy-img-${renderedCount}`;
+  wrap.style.removeProperty("flex-basis");
+  wrap.style.removeProperty("flex-grow");
 
   if (snapshot.value.layoutMode === "masonry") {
     if (columnElements.length === 0) {
@@ -215,8 +311,8 @@ function appendWrap(wrap: HTMLElement): void {
 
   const img = wrap.firstElementChild;
   if (img instanceof HTMLImageElement) {
-    const width = img.naturalWidth || 1;
-    const height = img.naturalHeight || 1;
+    const width = Math.max(1, img.naturalWidth);
+    const height = Math.max(1, img.naturalHeight);
     const ratio = width / height;
     wrap.style.flexBasis = `${ratio * LEGACY_JUSTIFIED_HEIGHT}px`;
     wrap.style.flexGrow = String(ratio);
@@ -233,15 +329,28 @@ function selectItem(mediaId: string, event: MouseEvent): void {
   }
 }
 
+function refreshSelectionClasses(): void {
+  for (const [mediaId, state] of itemStates) {
+    if (state.wrap !== null) {
+      applySelectionClass(state.wrap, mediaId);
+    }
+  }
+}
+
+function applySelectionClass(wrap: HTMLElement, mediaId: string): void {
+  wrap.classList.toggle(
+    "selected",
+    selection.snapshot.selectedIds.includes(mediaId),
+  );
+}
+
 function handleScroll(): void {
-  // Intentionally no viewport/controller synchronization here. Existing DOM is
-  // scrolled natively; scroll only checks whether the append frontier is near.
+  // Intentionally tiny. Existing DOM scrolls natively and no controller state,
+  // spatial index or Vue list is updated here.
   loadNext();
 }
 
 function handleResize(): void {
-  // The original implementation only calls loadNext on resize. It does not
-  // continuously relayout or virtualize existing image nodes while scrolling.
   loadNext();
 }
 
@@ -255,10 +364,33 @@ function scheduleLoadNext(delay: number): void {
   }, delay);
 }
 
+function cancelScheduledLoad(): void {
+  if (loadTimer !== null) {
+    window.clearTimeout(loadTimer);
+    loadTimer = null;
+  }
+}
+
+function detachImageCallbacks(state: LegacyItemState): void {
+  if (state.img !== null) {
+    state.img.onload = null;
+    state.img.onerror = null;
+  }
+}
+
+function scrollToStart(): void {
+  const viewport = viewportElement.value;
+  if (viewport !== null) {
+    viewport.scrollTop = 0;
+  }
+}
+
 onMounted(() => {
   destroyed = false;
   buildLayoutShell();
-  unsubscribe = props.browser.subscribe(applySnapshot);
+  unsubscribeBrowser = props.browser.subscribe(applySnapshot);
+  unsubscribeSelection = selection.subscribe(refreshSelectionClasses);
+
   const viewport = viewportElement.value;
   if (viewport !== null) {
     resizeObserver = new ResizeObserver(handleResize);
@@ -269,16 +401,13 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   destroyed = true;
-  unsubscribe?.();
+  layoutEpoch += 1;
+  unsubscribeBrowser?.();
+  unsubscribeSelection?.();
   resizeObserver?.disconnect();
-  if (loadTimer !== null) {
-    window.clearTimeout(loadTimer);
-  }
+  cancelScheduledLoad();
   for (const state of itemStates.values()) {
-    if (state.img !== undefined) {
-      state.img.onload = null;
-      state.img.onerror = null;
-    }
+    detachImageCallbacks(state);
   }
 });
 </script>
@@ -338,7 +467,10 @@ onBeforeUnmount(() => {
   min-width: 0;
   background: var(--wf-surface-raised);
   contain: layout paint style;
-  content-visibility: auto;
+}
+
+:deep(.legacy-wrap.selected) {
+  box-shadow: inset 0 0 0 2px var(--wf-accent);
 }
 
 .legacy-imgbox.masonry :deep(.legacy-wrap) {
