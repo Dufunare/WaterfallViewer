@@ -1,4 +1,4 @@
-import { MediaBrowserController } from "../application/browser/mediaBrowserController";
+import { LegacyFlowBrowserController } from "../application/browser/legacyFlowBrowserController";
 import { CanvasBrowserController } from "../application/canvas/canvasBrowserController";
 import { CanvasSceneModel } from "../application/canvas/canvasSceneModel";
 import {
@@ -37,7 +37,7 @@ export interface ViewerRuntime {
   readonly workspace: ViewerWorkspaceController;
   readonly activation: MediaActivationController;
   readonly previewDetails: PreviewMediaDetailController;
-  readonly flowBrowser: MediaBrowserController;
+  readonly flowBrowser: LegacyFlowBrowserController;
   readonly createCanvasBrowser: () => CanvasBrowserController;
   dispose(): void;
 }
@@ -68,12 +68,17 @@ export function createViewerRuntime(
     activation,
     ports.detail,
   );
-  const flowBrowser = new MediaBrowserController({
+
+  // Experimental Flow path. It deliberately bypasses MediaBrowserController
+  // and the derived-thumbnail scheduler: the presentation receives opaque
+  // source URIs and reproduces the original frontend's append-only `Image`
+  // lifecycle and batch gate. Canvas remains on the production architecture so
+  // the experiment isolates only Flow behavior.
+  const flowBrowser = new LegacyFlowBrowserController(
     sessionController,
-    sourcePicker: ports.sourcePicker,
-    representationScheduler,
-    resourcePort: ports.resource,
-  });
+    ports.resource,
+  );
+
   const canvasScene = new CanvasSceneModel({
     atlas: {
       worldWidth: 4096,
