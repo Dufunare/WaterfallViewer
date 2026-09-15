@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   FLOW_SCRUB_SETTLE_MS,
+  FLOW_WHEEL_ACTIVITY_GRACE_MS,
   shouldEnterFlowScrub,
 } from "../src/presentation/flowScrollPolicy";
 
@@ -28,7 +29,7 @@ describe("Flow scroll scrub policy", () => {
     ).toBe(true);
   });
 
-  it("enters scrub mode for sustained high-velocity movement even below one screen", () => {
+  it("enters scrub mode for non-wheel high-velocity movement even below one screen", () => {
     expect(
       shouldEnterFlowScrub({
         previousScrollTop: 1000,
@@ -39,8 +40,22 @@ describe("Flow scroll scrub policy", () => {
     ).toBe(true);
   });
 
-  it("uses a short settle delay so the final viewport wins without feeling sticky", () => {
+  it("keeps fast wheel or touchpad browsing out of scrub mode", () => {
+    expect(
+      shouldEnterFlowScrub({
+        previousScrollTop: 1000,
+        scrollTop: 1500,
+        viewportHeight: 900,
+        elapsedMs: 16,
+        recentWheel: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("uses short gesture windows that do not make browsing feel sticky", () => {
     expect(FLOW_SCRUB_SETTLE_MS).toBeGreaterThanOrEqual(50);
     expect(FLOW_SCRUB_SETTLE_MS).toBeLessThanOrEqual(150);
+    expect(FLOW_WHEEL_ACTIVITY_GRACE_MS).toBeGreaterThanOrEqual(100);
+    expect(FLOW_WHEEL_ACTIVITY_GRACE_MS).toBeLessThanOrEqual(250);
   });
 });
