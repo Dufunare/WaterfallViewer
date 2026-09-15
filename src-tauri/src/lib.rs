@@ -11,7 +11,7 @@ use ipc::{
     release_representation, request_thumbnail, start_scan, ScanRegistry,
 };
 use local_source::LocalSourceRegistry;
-use media_http::{get_media_http_origin, MediaHttpServer};
+use media_http::{get_media_http_origins, MediaHttpServer};
 use media_resource::{respond_to_media_request, MediaResourceRegistry, MEDIA_PROTOCOL};
 use thumbnail_cache::ThumbnailCacheManager;
 use thumbnail_request::ThumbnailRequestRegistry;
@@ -30,8 +30,6 @@ pub fn run() {
         .manage(media_http)
         .manage(ThumbnailCacheManager::default())
         .manage(ThumbnailRequestRegistry::default())
-        // Keep the existing custom protocol for Canvas/preview compatibility.
-        // The experimental Flow path uses the loopback HTTP server instead.
         .register_asynchronous_uri_scheme_protocol(
             MEDIA_PROTOCOL,
             move |_context, request, responder| {
@@ -54,7 +52,7 @@ pub fn run() {
             release_representation,
             get_media_detail,
             pick_source_directory,
-            get_media_http_origin
+            get_media_http_origins
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
