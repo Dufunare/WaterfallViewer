@@ -13,6 +13,7 @@ import type {
 } from "../../application/browser/mediaBrowserController";
 import {
   FLOW_SCRUB_SETTLE_MS,
+  FLOW_WHEEL_ACTIVITY_GRACE_MS,
   shouldEnterFlowScrub,
 } from "../flowScrollPolicy";
 import { useMediaSelection } from "../selectionContext";
@@ -29,6 +30,7 @@ const viewportElement = ref<HTMLElement | null>(null);
 const snapshot = shallowRef(props.browser.snapshot);
 const selectionSnapshot = shallowRef(selection.snapshot);
 const isScrubbing = ref(false);
+const scrollDirection = ref<-1 | 0 | 1>(0);
 
 let unsubscribe: (() => void) | null = null;
 let unsubscribeSelection: (() => void) | null = null;
@@ -37,6 +39,7 @@ let viewportFrame: number | null = null;
 let scrubSettleTimer: number | null = null;
 let lastScrollTop: number | null = null;
 let lastScrollAt = 0;
+let lastWheelAt = Number.NEGATIVE_INFINITY;
 
 const FLOW_MAX_REPRESENTATION_DPR = 1.5;
 
@@ -47,15 +50,34 @@ const selectedIds = computed(() => new Set(selectionSnapshot.value.selectedIds))
 const orderedTiles = computed(() => {
   const visible = snapshot.value.tiles.filter((tile) => tile.priority === "visible");
   if (isScrubbing.value) {
-    return visible;
+    return sortTilesForDirection(visible, scrollDirection.value);
   }
+
+  const overscan = snapshot.value.tiles.filter((tile) => tile.priority !== "visible");
   return [
-    ...visible,
-    ...snapshot.value.tiles.filter((tile) => tile.priority !== "visible"),
+    ...sortTilesForDirection(visible, scrollDirection.value),
+    ...sortTilesForDirection(overscan, scrollDirection.value),
   ];
 });
 const columnOptions = ["auto", 1, 2, 3, 4, 5, 6, 7, 8] as const;
 const rowHeightOptions = [120, 160, 220, 300, 400] as const;
+
+function sortTilesForDirection(
+  tiles: readonly BrowserTile[],
+  direction: -1 | 0 | 1,
+): BrowserTile[] {
+  if (direction === 0) {
+    return [...tiles].sort(compareTilesTopToBottom);
+  }
+  return [...tiles].sort((left, right) => {
+    const vertical = compareTilesTopToBottom(left, right);
+    return direction > 0 ? vertical : -vertical;
+  });
+}
+
+function compareTilesTopToBottom(left: BrowserTile, right: BrowserTile): number {
+  return left.y - right.y || left.x - right.x;
+}
 
 function tileStyle(tile: BrowserTile): Record<string, string> {
   return {
@@ -91,11 +113,29 @@ function handleRowHeightChange(event: Event): void {
   props.browser.setJustifiedTargetRowHeight(Number(target.value));
 }
 
+function handleWheel(): void {
+  lastWheelAt = performance.now();
+  // Wheel/trackpad input is continuous browsing. If a preceding scroll sample
+  // briefly looked like a scrub, keep already decoded images mounted instead of
+  // flashing the viewport back to placeholders.
+  if (isScrubbing.value) {
+    isScrubbing.value = false;
+    if (scrubSettleTimer !== null) {
+      window.clearTimeout(scrubSettleTimer);
+      scrubSettleTimer = null;
+    }
+  }
+}
+
 function handleScroll(): void {
   const element = viewportElement.value;
   if (element !== null && element.clientHeight > 0) {
     const now = performance.now();
     if (lastScrollTop !== null) {
+      const delta = element.scrollTop - lastScrollTop;
+      if (delta !== 0) {
+        scrollDirection.value = delta > 0 ? 1 : -1;
+      }
       const elapsedMs = Math.max(1, now - lastScrollAt);
       if (
         shouldEnterFlowScrub({
@@ -103,6 +143,7 @@ function handleScroll(): void {
           scrollTop: element.scrollTop,
           viewportHeight: element.clientHeight,
           elapsedMs,
+          recentWheel: now - lastWheelAt <= FLOW_WHEEL_ACTIVITY_GRACE_MS,
         })
       ) {
         isScrubbing.value = true;
@@ -126,8 +167,6 @@ function scheduleScrubSettle(): void {
   scrubSettleTimer = window.setTimeout(() => {
     scrubSettleTimer = null;
     isScrubbing.value = false;
-    // The controller already tracks the latest geometry. Re-sync once the
-    // gesture settles so the final viewport gets first chance to mount media.
     scheduleViewportSync();
   }, FLOW_SCRUB_SETTLE_MS);
 }
@@ -152,9 +191,6 @@ function syncViewport(): void {
     width: element.clientWidth,
     height: element.clientHeight,
     scrollTop: element.scrollTop,
-    // Flow is an overview surface. Asking the representation pipeline to match
-    // 2x/3x desktop scale factors provides little visible benefit at tile size
-    // while multiplying decode/resize work. Preview/Canvas keep independent LOD.
     devicePixelRatio: Math.min(
       FLOW_MAX_REPRESENTATION_DPR,
       Math.max(1, window.devicePixelRatio || 1),
@@ -199,6 +235,7 @@ onBeforeUnmount(() => {
     class="flow-viewport"
     :class="{ scrubbing: isScrubbing }"
     aria-label="Flow media browser"
+    @wheel.passive="handleWheel"
     @scroll.passive="handleScroll"
   >
     <div class="flow-density-controls" aria-label="Flow density controls">
