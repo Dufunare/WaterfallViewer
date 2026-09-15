@@ -12,6 +12,11 @@ import type {
   MediaBrowserController,
 } from "../../application/browser/mediaBrowserController";
 import {
+  FLOW_REVEAL_COHORT_MS,
+  FLOW_REVEAL_SCAN_STEP_MS,
+  selectFlowRevealBatch,
+} from "../flowRevealPolicy";
+import {
   FLOW_SCRUB_SETTLE_MS,
   FLOW_WHEEL_ACTIVITY_GRACE_MS,
   shouldEnterFlowScrub,
@@ -33,15 +38,21 @@ const isScrubbing = ref(false);
 const scrollDirection = ref<-1 | 0 | 1>(0);
 const liveScrollTop = ref(0);
 const liveViewportHeight = ref(0);
+const revealRevision = ref(0);
 
 let unsubscribe: (() => void) | null = null;
 let unsubscribeSelection: (() => void) | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let viewportFrame: number | null = null;
 let scrubSettleTimer: number | null = null;
+let revealTimer: number | null = null;
 let lastScrollTop: number | null = null;
 let lastScrollAt = 0;
 let lastWheelAt = Number.NEGATIVE_INFINITY;
+let revealSessionId: string | null = null;
+
+const revealedMediaIds = new Set<string>();
+const pendingRevealMediaIds = new Set<string>();
 
 const FLOW_MAX_REPRESENTATION_DPR = 1.5;
 
@@ -95,6 +106,78 @@ function shouldEagerLoad(tile: BrowserTile): boolean {
     return tile.y <= top;
   }
   return false;
+}
+
+function isTileRevealed(mediaId: string): boolean {
+  void revealRevision.value;
+  return revealedMediaIds.has(mediaId);
+}
+
+function handleImageLoad(tile: BrowserTile): void {
+  if (revealedMediaIds.has(tile.mediaId)) {
+    return;
+  }
+  pendingRevealMediaIds.add(tile.mediaId);
+  scheduleRevealCohort();
+}
+
+function scheduleRevealCohort(delay = FLOW_REVEAL_COHORT_MS): void {
+  if (revealTimer !== null || pendingRevealMediaIds.size === 0) {
+    return;
+  }
+  revealTimer = window.setTimeout(() => {
+    revealTimer = null;
+    flushRevealCohort();
+  }, delay);
+}
+
+function flushRevealCohort(): void {
+  if (pendingRevealMediaIds.size === 0) {
+    return;
+  }
+
+  const currentTiles = orderedTiles.value;
+  const currentIds = new Set(currentTiles.map((tile) => tile.mediaId));
+  for (const mediaId of [...pendingRevealMediaIds]) {
+    if (!currentIds.has(mediaId)) {
+      pendingRevealMediaIds.delete(mediaId);
+    }
+  }
+
+  const batch = selectFlowRevealBatch(
+    currentTiles,
+    pendingRevealMediaIds,
+    scrollDirection.value,
+    Math.max(1, liveViewportHeight.value),
+  );
+
+  if (batch.length === 0) {
+    return;
+  }
+
+  for (const mediaId of batch) {
+    pendingRevealMediaIds.delete(mediaId);
+    revealedMediaIds.add(mediaId);
+  }
+  revealRevision.value += 1;
+
+  if (pendingRevealMediaIds.size > 0) {
+    scheduleRevealCohort(FLOW_REVEAL_SCAN_STEP_MS);
+  }
+}
+
+function resetRevealState(sessionId: string | null): void {
+  if (sessionId === revealSessionId) {
+    return;
+  }
+  revealSessionId = sessionId;
+  revealedMediaIds.clear();
+  pendingRevealMediaIds.clear();
+  revealRevision.value += 1;
+  if (revealTimer !== null) {
+    window.clearTimeout(revealTimer);
+    revealTimer = null;
+  }
 }
 
 function tileStyle(tile: BrowserTile): Record<string, string> {
@@ -219,6 +302,7 @@ function syncViewport(): void {
 
 onMounted(() => {
   unsubscribe = props.browser.subscribe((nextSnapshot) => {
+    resetRevealState(nextSnapshot.sessionId);
     snapshot.value = nextSnapshot;
   });
   unsubscribeSelection = selection.subscribe((nextSnapshot) => {
@@ -246,6 +330,9 @@ onBeforeUnmount(() => {
   }
   if (scrubSettleTimer !== null) {
     window.clearTimeout(scrubSettleTimer);
+  }
+  if (revealTimer !== null) {
+    window.clearTimeout(revealTimer);
   }
 });
 </script>
@@ -310,12 +397,14 @@ onBeforeUnmount(() => {
             tile.thumbnailUri
           "
           class="flow-image"
+          :class="{ revealed: isTileRevealed(tile.mediaId) }"
           :src="tile.thumbnailUri"
           :alt="tile.name"
           decoding="async"
           :loading="shouldEagerLoad(tile) ? 'eager' : 'lazy'"
           :fetchpriority="tile.priority === 'visible' ? 'high' : 'low'"
           draggable="false"
+          @load="handleImageLoad(tile)"
         />
         <div v-else class="flow-placeholder">
           <span v-if="tile.thumbnailStatus === 'error'" class="placeholder-label">
@@ -408,8 +497,13 @@ onBeforeUnmount(() => {
   height: 100%;
   display: block;
   object-fit: cover;
+  opacity: 0;
   user-select: none;
   -webkit-user-drag: none;
+}
+
+.flow-image.revealed {
+  opacity: 1;
 }
 
 .flow-placeholder {
