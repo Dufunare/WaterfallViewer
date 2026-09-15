@@ -36,7 +36,7 @@ const snapshot = shallowRef(props.browser.snapshot);
 
 let unsubscribeBrowser: (() => void) | null = null;
 let unsubscribeSelection: (() => void) | null = null;
-let resizeObserver: ResizeObserver | null = null;
+let displayObserver: MutationObserver | null = null;
 let activeSessionId: string | null = null;
 let layoutEpoch = 0;
 let loading = 0;
@@ -45,6 +45,7 @@ let columnElements: HTMLElement[] = [];
 let columnHeights: number[] = [];
 let masonryColumnWidth = 1;
 let masonryFrontierHeight = 0;
+let flowContentTop = 0;
 let queue: LegacyFlowItem[] = [];
 let queuedIds = new Set<string>();
 let itemStates = new Map<string, LegacyItemState>();
@@ -54,6 +55,8 @@ let pendingAppends: PendingAppend[] = [];
 let pendingAppendIds = new Set<string>();
 let appendFrame: number | null = null;
 let lastScrollAt = Number.NEGATIVE_INFINITY;
+let savedFlowScrollTop = 0;
+let rootScrollEnabled = false;
 let destroyed = false;
 let loadTimer: number | null = null;
 
@@ -65,6 +68,7 @@ const LEGACY_JUSTIFIED_HEIGHT = 220;
 const SCROLL_ACTIVE_WINDOW_MS = 90;
 const APPENDS_PER_SCROLL_FRAME = 2;
 const APPENDS_PER_IDLE_FRAME = 10;
+const ROOT_SCROLL_CLASS = "wf-flow-root-scroll";
 
 function handleBrowserEvent(event: LegacyFlowBrowserEvent): void {
   snapshot.value = event.snapshot;
@@ -126,8 +130,6 @@ function softReflow(items: readonly LegacyFlowItem[]): void {
   queue = [];
   queuedIds.clear();
 
-  // Preserve completed Image/wrapper nodes across sort/filter/layout changes.
-  // This mirrors the supplied frontend's allData.{img,wrap} reuse.
   for (const state of itemStates.values()) {
     if (state.status === "loading") {
       detachImageCallbacks(state);
@@ -189,6 +191,17 @@ function buildLayoutShell(): void {
   } else {
     imgbox.className = "legacy-imgbox justified";
   }
+  updateFlowContentTop();
+}
+
+function updateFlowContentTop(): void {
+  const viewport = viewportElement.value;
+  if (viewport === null) {
+    flowContentTop = 0;
+    return;
+  }
+  const root = document.documentElement;
+  flowContentTop = viewport.getBoundingClientRect().top + root.scrollTop;
 }
 
 function updateMasonryColumnWidth(): void {
@@ -200,6 +213,7 @@ function updateMasonryColumnWidth(): void {
 }
 
 function rebuildMasonryHeightModel(): void {
+  updateFlowContentTop();
   if (snapshot.value.layoutMode !== "masonry" || columnElements.length === 0) {
     return;
   }
@@ -254,24 +268,23 @@ function updateMasonryFrontier(): void {
 }
 
 function nearLoadedEnd(): boolean {
-  const viewport = viewportElement.value;
+  const root = document.documentElement;
   const imgbox = imgboxElement.value;
-  if (viewport === null || imgbox === null) {
+  if (!rootScrollEnabled || imgbox === null) {
     return false;
   }
   if (renderedCount === 0) {
     return true;
   }
 
-  // Masonry uses the cached numerical frontier. No column geometry is read
-  // during scrolling, so a scroll event cannot synchronously force layout.
-  const frontier =
+  const localFrontier =
     snapshot.value.layoutMode === "masonry"
       ? masonryFrontierHeight
       : imgbox.scrollHeight;
+  const documentFrontier = flowContentTop + localFrontier;
   return (
-    viewport.scrollTop + viewport.clientHeight >=
-    frontier - viewport.clientHeight
+    root.scrollTop + root.clientHeight >=
+    documentFrontier - root.clientHeight
   );
 }
 
@@ -280,7 +293,7 @@ function hasPendingVisualWork(): boolean {
 }
 
 function loadNext(): void {
-  if (destroyed) {
+  if (destroyed || !rootScrollEnabled) {
     return;
   }
 
@@ -297,11 +310,6 @@ function loadNext(): void {
     return;
   }
 
-  // The supplied frontend awaits Queue.shift() inside a 25-iteration loop.
-  // Preserve that producer/consumer behavior without an unresolved Promise:
-  // when discovery temporarily runs dry, keep the current batch open. Later
-  // append events continue filling the same batch even while earlier images
-  // from it are still loading.
   while (activeBatchRemaining > 0 && queue.length > 0) {
     const item = queue.shift();
     if (item === undefined) {
@@ -379,9 +387,6 @@ function startImageLoad(state: LegacyItemState, epoch: number): void {
     const wrap = createWrap(state, img);
     state.wrap = wrap;
     state.status = "ready";
-
-    // Image completion may arrive in a burst while native scrolling is active.
-    // Keep those callbacks layout-free and commit the ready DOM from rAF.
     queueAppend(wrap, epoch, true);
   };
 
@@ -555,14 +560,58 @@ function applySelectionClass(wrap: HTMLElement, mediaId: string): void {
   );
 }
 
-function handleScroll(): void {
+function handleDocumentScroll(): void {
+  if (!rootScrollEnabled) {
+    return;
+  }
   lastScrollAt = performance.now();
   loadNext();
 }
 
-function handleResize(): void {
+function handleWindowResize(): void {
   rebuildMasonryHeightModel();
   loadNext();
+}
+
+function syncRootScrollerFromVisibility(): void {
+  const viewport = viewportElement.value;
+  const shouldEnable = viewport !== null && viewport.style.display !== "none";
+  if (shouldEnable === rootScrollEnabled) {
+    return;
+  }
+
+  const root = document.documentElement;
+  if (shouldEnable) {
+    root.classList.add(ROOT_SCROLL_CLASS);
+    document.body.classList.add(ROOT_SCROLL_CLASS);
+    rootScrollEnabled = true;
+    window.requestAnimationFrame(() => {
+      if (!rootScrollEnabled || destroyed) {
+        return;
+      }
+      root.scrollTop = savedFlowScrollTop;
+      rebuildMasonryHeightModel();
+      loadNext();
+    });
+    return;
+  }
+
+  savedFlowScrollTop = root.scrollTop;
+  rootScrollEnabled = false;
+  root.classList.remove(ROOT_SCROLL_CLASS);
+  document.body.classList.remove(ROOT_SCROLL_CLASS);
+  root.scrollTop = 0;
+}
+
+function disableRootScroller(): void {
+  const root = document.documentElement;
+  if (rootScrollEnabled) {
+    savedFlowScrollTop = root.scrollTop;
+  }
+  rootScrollEnabled = false;
+  root.classList.remove(ROOT_SCROLL_CLASS);
+  document.body.classList.remove(ROOT_SCROLL_CLASS);
+  root.scrollTop = 0;
 }
 
 function scheduleLoadNext(delay: number): void {
@@ -599,9 +648,9 @@ function detachImageCallbacks(state: LegacyItemState): void {
 }
 
 function scrollToStart(): void {
-  const viewport = viewportElement.value;
-  if (viewport !== null) {
-    viewport.scrollTop = 0;
+  savedFlowScrollTop = 0;
+  if (rootScrollEnabled) {
+    document.documentElement.scrollTop = 0;
   }
 }
 
@@ -615,11 +664,18 @@ onMounted(() => {
   unsubscribeBrowser = props.browser.subscribe(handleBrowserEvent);
   unsubscribeSelection = selection.subscribe(refreshSelectionClasses);
 
+  document.addEventListener("scroll", handleDocumentScroll, { passive: true });
+  window.addEventListener("resize", handleWindowResize, { passive: true });
+
   const viewport = viewportElement.value;
   if (viewport !== null) {
-    resizeObserver = new ResizeObserver(handleResize);
-    resizeObserver.observe(viewport);
+    displayObserver = new MutationObserver(syncRootScrollerFromVisibility);
+    displayObserver.observe(viewport, {
+      attributes: true,
+      attributeFilter: ["style"],
+    });
   }
+  syncRootScrollerFromVisibility();
   loadNext();
 });
 
@@ -629,9 +685,12 @@ onBeforeUnmount(() => {
   activeBatchRemaining = 0;
   unsubscribeBrowser?.();
   unsubscribeSelection?.();
-  resizeObserver?.disconnect();
+  displayObserver?.disconnect();
+  document.removeEventListener("scroll", handleDocumentScroll);
+  window.removeEventListener("resize", handleWindowResize);
   cancelScheduledLoad();
   cancelPendingAppends();
+  disableRootScroller();
   for (const state of itemStates.values()) {
     detachImageCallbacks(state);
   }
@@ -643,7 +702,6 @@ onBeforeUnmount(() => {
     ref="viewportElement"
     class="legacy-flow-viewport"
     aria-label="Flow media browser"
-    @scroll.passive="handleScroll"
   >
     <div
       ref="imgboxElement"
@@ -655,16 +713,51 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+:global(html.wf-flow-root-scroll) {
+  height: auto;
+  min-height: 100%;
+  overflow-x: hidden;
+  overflow-y: scroll;
+}
+
+:global(body.wf-flow-root-scroll) {
+  height: auto;
+  min-height: 100vh;
+  overflow: visible;
+}
+
+:global(body.wf-flow-root-scroll #app) {
+  height: auto;
+  min-height: 100vh;
+}
+
+:global(body.wf-flow-root-scroll .viewer-shell) {
+  height: auto !important;
+  min-height: 100vh;
+  display: block;
+}
+
+:global(body.wf-flow-root-scroll .viewer-toolbar) {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+:global(body.wf-flow-root-scroll .viewer-stage) {
+  min-height: calc(100vh - var(--wf-toolbar-height));
+  overflow: visible !important;
+}
+
+:global(body.wf-flow-root-scroll .viewer-stage > .legacy-flow-viewport.viewer-pane) {
+  position: relative !important;
+  inset: auto !important;
+  min-height: calc(100vh - var(--wf-toolbar-height));
+}
+
 .legacy-flow-viewport {
   position: relative;
   width: 100%;
-  height: 100%;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
-  contain: layout paint style;
+  min-height: calc(100vh - var(--wf-toolbar-height));
 }
 
 .legacy-imgbox.masonry {
@@ -694,10 +787,8 @@ onBeforeUnmount(() => {
 :deep(.legacy-wrap) {
   position: relative;
   margin: 0;
-  overflow: hidden;
   min-width: 0;
-  background: var(--wf-surface-raised);
-  contain: layout paint style;
+  cursor: pointer;
 }
 
 :deep(.legacy-wrap.selected) {
