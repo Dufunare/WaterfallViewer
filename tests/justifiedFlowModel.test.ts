@@ -91,7 +91,7 @@ describe("JustifiedFlowModel", () => {
     expect(snapshot.layout.nodes[1].x + snapshot.layout.nodes[1].width).toBeCloseTo(180);
   });
 
-  it("defers media without usable visual metadata", () => {
+  it("keeps media without usable image metadata visible with square fallback geometry", () => {
     const model = new JustifiedFlowModel(config);
     model.sync("session-1", [
       media("valid"),
@@ -101,10 +101,12 @@ describe("JustifiedFlowModel", () => {
 
     const snapshot = model.snapshot();
     expect(snapshot.itemCount).toBe(3);
-    expect(snapshot.layoutItemCount).toBe(1);
-    expect(snapshot.deferredMedia).toEqual([
-      { mediaId: "missing", reason: "missing-visual" },
-      { mediaId: "invalid", reason: "invalid-visual" },
+    expect(snapshot.layoutItemCount).toBe(3);
+    expect(snapshot.deferredMedia).toEqual([]);
+    expect(snapshot.layout.nodes.map((node) => node.mediaId)).toEqual([
+      "valid",
+      "missing",
+      "invalid",
     ]);
   });
 
