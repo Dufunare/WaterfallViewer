@@ -18,24 +18,35 @@ describe("Flow scroll scrub policy", () => {
     ).toBe(false);
   });
 
-  it("enters scrub mode for a large scrollbar jump", () => {
+  it("keeps a moderate scrollbar move inside the retained warm canvas", () => {
+    expect(
+      shouldEnterFlowScrub({
+        previousScrollTop: 1000,
+        scrollTop: 2100,
+        viewportHeight: 900,
+        elapsedMs: 120,
+      }),
+    ).toBe(false);
+  });
+
+  it("enters scrub mode for a deep scrollbar jump", () => {
     expect(
       shouldEnterFlowScrub({
         previousScrollTop: 0,
         scrollTop: 5000,
         viewportHeight: 900,
-        elapsedMs: 16,
+        elapsedMs: 50,
       }),
     ).toBe(true);
   });
 
-  it("enters scrub mode for non-wheel high-velocity movement even below one screen", () => {
+  it("enters scrub mode for extreme non-wheel velocity", () => {
     expect(
       shouldEnterFlowScrub({
         previousScrollTop: 1000,
-        scrollTop: 1400,
+        scrollTop: 1600,
         viewportHeight: 900,
-        elapsedMs: 50,
+        elapsedMs: 30,
       }),
     ).toBe(true);
   });
@@ -44,7 +55,7 @@ describe("Flow scroll scrub policy", () => {
     expect(
       shouldEnterFlowScrub({
         previousScrollTop: 1000,
-        scrollTop: 1500,
+        scrollTop: 2500,
         viewportHeight: 900,
         elapsedMs: 16,
         recentWheel: true,
