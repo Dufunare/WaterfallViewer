@@ -14,9 +14,9 @@ export interface FlowScrollSample {
 /**
  * A scrollbar-thumb drag can traverse many cold viewports in only a few frames.
  * Loading media for every transient viewport wastes disk I/O, custom-protocol
- * responses and Chromium decode work. Flow treats those movements as scrubbing:
- * geometry keeps following the scrollbar, while image DOM is gated until the
- * viewport settles.
+ * responses and Chromium decode work. Flow treats only genuinely deep/fast
+ * movements as scrubbing. Moderate drags stay in continuous-canvas mode and are
+ * served from the retained warm render window.
  */
 export const FLOW_SCRUB_SETTLE_MS = 90;
 
@@ -27,8 +27,8 @@ export const FLOW_SCRUB_SETTLE_MS = 90;
  */
 export const FLOW_WHEEL_ACTIVITY_GRACE_MS = 180;
 
-const SCRUB_JUMP_SCREENS = 0.9;
-const SCRUB_VELOCITY_PX_PER_MS = 6;
+const SCRUB_JUMP_SCREENS = 2;
+const SCRUB_VELOCITY_PX_PER_MS = 12;
 
 export function shouldEnterFlowScrub(sample: FlowScrollSample): boolean {
   requireFiniteNonNegative(sample.previousScrollTop, "previousScrollTop");
