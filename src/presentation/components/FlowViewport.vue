@@ -37,7 +37,6 @@ const snapshot = shallowRef(props.browser.snapshot);
 let unsubscribeBrowser: (() => void) | null = null;
 let unsubscribeSelection: (() => void) | null = null;
 let displayObserver: MutationObserver | null = null;
-let columnResizeObserver: ResizeObserver | null = null;
 let activeSessionId: string | null = null;
 let layoutEpoch = 0;
 let loading = 0;
@@ -70,7 +69,6 @@ const SCROLL_ACTIVE_WINDOW_MS = 90;
 const APPENDS_PER_SCROLL_FRAME = 2;
 const APPENDS_PER_IDLE_FRAME = 10;
 const ROOT_SCROLL_CLASS = "wf-flow-root-scroll";
-const HEIGHT_RECONCILE_EPSILON = 0.5;
 
 function handleBrowserEvent(event: LegacyFlowBrowserEvent): void {
   snapshot.value = event.snapshot;
@@ -175,8 +173,6 @@ function buildLayoutShell(): void {
     return;
   }
 
-  columnResizeObserver?.disconnect();
-  columnResizeObserver = null;
   imgbox.replaceChildren();
   columnElements = [];
   columnHeights = [];
@@ -192,54 +188,10 @@ function buildLayoutShell(): void {
       columnHeights.push(0);
     }
     updateMasonryColumnWidth();
-    observeMasonryColumns();
   } else {
     imgbox.className = "legacy-imgbox justified";
   }
   updateFlowContentTop();
-}
-
-function observeMasonryColumns(): void {
-  columnResizeObserver?.disconnect();
-  if (columnElements.length === 0) {
-    columnResizeObserver = null;
-    return;
-  }
-
-  columnResizeObserver = new ResizeObserver((entries) => {
-    if (destroyed || snapshot.value.layoutMode !== "masonry") {
-      return;
-    }
-
-    let changed = false;
-    for (const entry of entries) {
-      const index = columnElements.indexOf(entry.target as HTMLElement);
-      if (index < 0) {
-        continue;
-      }
-      const actualHeight = entry.contentRect.height;
-      if (!Number.isFinite(actualHeight)) {
-        continue;
-      }
-      if (
-        Math.abs((columnHeights[index] ?? 0) - actualHeight) <=
-        HEIGHT_RECONCILE_EPSILON
-      ) {
-        continue;
-      }
-      columnHeights[index] = actualHeight;
-      changed = true;
-    }
-
-    if (changed) {
-      updateMasonryFrontier();
-      loadNext();
-    }
-  });
-
-  for (const column of columnElements) {
-    columnResizeObserver.observe(column);
-  }
 }
 
 function updateFlowContentTop(): void {
@@ -260,6 +212,15 @@ function updateMasonryColumnWidth(): void {
   masonryColumnWidth = Math.max(1, (availableWidth - totalGap) / LEGACY_COLUMN_COUNT);
 }
 
+function reconcileMasonryHeightsFromLayout(): void {
+  if (snapshot.value.layoutMode !== "masonry" || columnElements.length === 0) {
+    return;
+  }
+
+  columnHeights = columnElements.map((column) => column.offsetHeight);
+  updateMasonryFrontier();
+}
+
 function rebuildMasonryHeightModel(): void {
   updateFlowContentTop();
   if (snapshot.value.layoutMode !== "masonry" || columnElements.length === 0) {
@@ -267,23 +228,7 @@ function rebuildMasonryHeightModel(): void {
   }
 
   updateMasonryColumnWidth();
-  columnHeights = columnElements.map((column) => {
-    let height = 0;
-    let count = 0;
-    for (const child of Array.from(column.children)) {
-      const img = child.firstElementChild;
-      if (!(img instanceof HTMLImageElement)) {
-        continue;
-      }
-      if (count > 0) {
-        height += LEGACY_ROW_GAP;
-      }
-      height += estimatedMasonryImageHeight(img);
-      count += 1;
-    }
-    return height;
-  });
-  updateMasonryFrontier();
+  reconcileMasonryHeightsFromLayout();
 }
 
 function estimatedMasonryImageHeight(img: HTMLImageElement): number {
@@ -488,6 +433,10 @@ function flushPendingAppends(timestamp: number): void {
     ? APPENDS_PER_SCROLL_FRAME
     : APPENDS_PER_IDLE_FRAME;
   let committed = 0;
+
+  if (snapshot.value.layoutMode === "masonry" && pendingAppends.length > 0) {
+    reconcileMasonryHeightsFromLayout();
+  }
 
   while (committed < budget && pendingAppends.length > 0) {
     const pending = pendingAppends.shift();
@@ -735,7 +684,6 @@ onBeforeUnmount(() => {
   unsubscribeBrowser?.();
   unsubscribeSelection?.();
   displayObserver?.disconnect();
-  columnResizeObserver?.disconnect();
   document.removeEventListener("scroll", handleDocumentScroll);
   window.removeEventListener("resize", handleWindowResize);
   cancelScheduledLoad();
