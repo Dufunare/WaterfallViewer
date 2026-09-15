@@ -31,6 +31,8 @@ const snapshot = shallowRef(props.browser.snapshot);
 const selectionSnapshot = shallowRef(selection.snapshot);
 const isScrubbing = ref(false);
 const scrollDirection = ref<-1 | 0 | 1>(0);
+const liveScrollTop = ref(0);
+const liveViewportHeight = ref(0);
 
 let unsubscribe: (() => void) | null = null;
 let unsubscribeSelection: (() => void) | null = null;
@@ -79,6 +81,22 @@ function compareTilesTopToBottom(left: BrowserTile, right: BrowserTile): number 
   return left.y - right.y || left.x - right.x;
 }
 
+function shouldEagerLoad(tile: BrowserTile): boolean {
+  if (tile.priority === "visible") {
+    return true;
+  }
+
+  const top = liveScrollTop.value;
+  const bottom = top + liveViewportHeight.value;
+  if (scrollDirection.value > 0) {
+    return tile.y + tile.height >= bottom;
+  }
+  if (scrollDirection.value < 0) {
+    return tile.y <= top;
+  }
+  return false;
+}
+
 function tileStyle(tile: BrowserTile): Record<string, string> {
   return {
     width: `${tile.width}px`,
@@ -115,9 +133,6 @@ function handleRowHeightChange(event: Event): void {
 
 function handleWheel(): void {
   lastWheelAt = performance.now();
-  // Wheel/trackpad input is continuous browsing. If a preceding scroll sample
-  // briefly looked like a scrub, keep already decoded images mounted instead of
-  // flashing the viewport back to placeholders.
   if (isScrubbing.value) {
     isScrubbing.value = false;
     if (scrubSettleTimer !== null) {
@@ -131,6 +146,8 @@ function handleScroll(): void {
   const element = viewportElement.value;
   if (element !== null && element.clientHeight > 0) {
     const now = performance.now();
+    liveScrollTop.value = element.scrollTop;
+    liveViewportHeight.value = element.clientHeight;
     if (lastScrollTop !== null) {
       const delta = element.scrollTop - lastScrollTop;
       if (delta !== 0) {
@@ -187,6 +204,8 @@ function syncViewport(): void {
     return;
   }
 
+  liveScrollTop.value = element.scrollTop;
+  liveViewportHeight.value = element.clientHeight;
   props.browser.setViewport({
     width: element.clientWidth,
     height: element.clientHeight,
@@ -212,6 +231,8 @@ onMounted(() => {
     resizeObserver.observe(element);
     lastScrollTop = element.scrollTop;
     lastScrollAt = performance.now();
+    liveScrollTop.value = element.scrollTop;
+    liveViewportHeight.value = element.clientHeight;
   }
   scheduleViewportSync();
 });
@@ -292,7 +313,7 @@ onBeforeUnmount(() => {
           :src="tile.thumbnailUri"
           :alt="tile.name"
           decoding="async"
-          :loading="tile.priority === 'visible' ? 'eager' : 'lazy'"
+          :loading="shouldEagerLoad(tile) ? 'eager' : 'lazy'"
           :fetchpriority="tile.priority === 'visible' ? 'high' : 'low'"
           draggable="false"
         />
