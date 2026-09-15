@@ -102,10 +102,17 @@ export function createViewerRuntime(
       // In browser-native mode maxThumbnailEdge is only a scheduling/cache key;
       // the source file itself is delivered unchanged to the WebView.
       maxThumbnailEdge: 768,
-      // The old frontend retained loaded image wrappers aggressively. Keeping a
-      // larger URI-state window is a cheap approximation while DOM rendering
-      // remains virtualized for now.
-      warmThumbnailCount: 512,
+      // Flow intentionally spends memory for continuity. Keeping roughly four
+      // viewport heights of mounted context on each side lets already decoded
+      // images survive ordinary wheel browsing and moderate scrollbar drags,
+      // which is much closer to the old frontend's retained Image wrappers.
+      renderWindowScreens: 4,
+      // Interest extends beyond the mounted window so work is not immediately
+      // cancelled at its edge and direction changes can reuse warm state.
+      prefetchWindowScreens: 6,
+      // Browser-native leases are cheap resource-key state; keep a generous LRU
+      // so revisiting recently browsed regions does not churn URI state.
+      warmThumbnailCount: 2048,
     },
   );
   const canvasScene = new CanvasSceneModel({
