@@ -13,47 +13,63 @@ use tauri::State;
 
 use crate::media_resource::MediaResourceRegistry;
 
+const MEDIA_HTTP_SHARDS: usize = 4;
+
 #[derive(Clone)]
 pub struct MediaHttpServer {
-    origin: Arc<str>,
+    origins: Arc<Vec<String>>,
 }
 
 impl MediaHttpServer {
     pub fn start(registry: MediaResourceRegistry) -> io::Result<Self> {
-        let listener = TcpListener::bind(("127.0.0.1", 0))?;
-        let address = listener.local_addr()?;
-        let token = make_session_token(address);
-        let origin: Arc<str> = format!("http://127.0.0.1:{}/{token}", address.port()).into();
-        let worker_token = token.clone();
+        let mut listeners = Vec::with_capacity(MEDIA_HTTP_SHARDS);
+        let mut addresses = Vec::with_capacity(MEDIA_HTTP_SHARDS);
+        for _ in 0..MEDIA_HTTP_SHARDS {
+            let listener = TcpListener::bind(("127.0.0.1", 0))?;
+            addresses.push(listener.local_addr()?);
+            listeners.push(listener);
+        }
 
-        thread::Builder::new()
-            .name("waterfall-media-http".to_owned())
-            .spawn(move || {
-                for stream in listener.incoming() {
-                    let Ok(stream) = stream else {
-                        continue;
-                    };
-                    let registry = registry.clone();
-                    let token = worker_token.clone();
-                    let _ = thread::Builder::new()
-                        .name("waterfall-media-http-client".to_owned())
-                        .spawn(move || {
-                            let _ = serve_connection(stream, registry, &token);
-                        });
-                }
-            })?;
+        let token = make_session_token(&addresses);
+        let origins = Arc::new(
+            addresses
+                .iter()
+                .map(|address| format!("http://127.0.0.1:{}/{token}", address.port()))
+                .collect::<Vec<_>>(),
+        );
 
-        Ok(Self { origin })
+        for (index, listener) in listeners.into_iter().enumerate() {
+            let worker_registry = registry.clone();
+            let worker_token = token.clone();
+            thread::Builder::new()
+                .name(format!("waterfall-media-http-{index}"))
+                .spawn(move || {
+                    for stream in listener.incoming() {
+                        let Ok(stream) = stream else {
+                            continue;
+                        };
+                        let registry = worker_registry.clone();
+                        let token = worker_token.clone();
+                        let _ = thread::Builder::new()
+                            .name("waterfall-media-http-client".to_owned())
+                            .spawn(move || {
+                                let _ = serve_connection(stream, registry, &token);
+                            });
+                    }
+                })?;
+        }
+
+        Ok(Self { origins })
     }
 
-    pub fn origin(&self) -> &str {
-        &self.origin
+    pub fn origins(&self) -> &[String] {
+        self.origins.as_slice()
     }
 }
 
 #[tauri::command]
-pub fn get_media_http_origin(server: State<'_, MediaHttpServer>) -> String {
-    server.origin().to_owned()
+pub fn get_media_http_origins(server: State<'_, MediaHttpServer>) -> Vec<String> {
+    server.origins().to_vec()
 }
 
 fn serve_connection(
@@ -229,7 +245,7 @@ fn content_type_for_path(path: &Path) -> &'static str {
     }
 }
 
-fn make_session_token(address: SocketAddr) -> String {
+fn make_session_token(addresses: &[SocketAddr]) -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -237,7 +253,9 @@ fn make_session_token(address: SocketAddr) -> String {
     let mut hasher = Sha256::new();
     hasher.update(std::process::id().to_le_bytes());
     hasher.update(now.to_le_bytes());
-    hasher.update(address.to_string().as_bytes());
+    for address in addresses {
+        hasher.update(address.to_string().as_bytes());
+    }
     let digest = hasher.finalize();
     digest
         .iter()
