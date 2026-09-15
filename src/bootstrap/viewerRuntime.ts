@@ -59,6 +59,12 @@ export function createViewerRuntime(
   const workspace = new ViewerWorkspaceController(
     sessionController,
     ports.sourcePicker,
+    {
+      // The legacy browser started consuming files almost as soon as traversal
+      // discovered them. Keep native IPC amortized, but make first discovery
+      // substantially earlier than the production 64-item batch.
+      scanBatchSize: 16,
+    },
   );
   const activation = new MediaActivationController(
     sessionController,
