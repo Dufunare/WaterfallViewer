@@ -18,6 +18,7 @@ export interface ThumbnailRepresentationLease extends ThumbnailRepresentation {
 
 export interface RepresentationSchedulerOptions {
   maxConcurrent?: number;
+  maxBackgroundConcurrent?: number;
 }
 
 export class RepresentationRequestCancelledError extends Error {
@@ -45,6 +46,7 @@ interface PendingJob {
   state: JobState;
   subscribers: Map<number, Subscriber>;
   backendAbortController: AbortController;
+  countsAgainstBackgroundLimit: boolean;
 }
 
 interface QueueEntry {
@@ -54,13 +56,21 @@ interface QueueEntry {
   sequence: number;
 }
 
-const DEFAULT_MAX_CONCURRENT = 6;
+// Thumbnail generation is currently CPU-heavy (decode + resize + encode). Keep
+// the default deliberately below typical desktop core counts so visible media
+// remains responsive instead of turning browsing into a batch-conversion job.
+const DEFAULT_MAX_CONCURRENT = 3;
+const DEFAULT_MAX_BACKGROUND_CONCURRENT = 1;
+const QUEUE_COMPACTION_MIN_ENTRIES = 128;
+const QUEUE_COMPACTION_STALE_FACTOR = 3;
 
 export class RepresentationScheduler {
   private readonly maxConcurrent: number;
+  private readonly maxBackgroundConcurrent: number;
   private readonly jobs = new Map<string, PendingJob>();
   private readonly queue: QueueEntry[] = [];
   private runningCount = 0;
+  private runningBackgroundCount = 0;
   private nextJobSequence = 0;
   private nextSubscriberId = 0;
 
@@ -72,7 +82,20 @@ export class RepresentationScheduler {
     if (!Number.isInteger(maxConcurrent) || maxConcurrent <= 0) {
       throw new RangeError("maxConcurrent must be a positive integer");
     }
+    const maxBackgroundConcurrent =
+      options.maxBackgroundConcurrent ??
+      Math.min(DEFAULT_MAX_BACKGROUND_CONCURRENT, maxConcurrent);
+    if (
+      !Number.isInteger(maxBackgroundConcurrent) ||
+      maxBackgroundConcurrent <= 0 ||
+      maxBackgroundConcurrent > maxConcurrent
+    ) {
+      throw new RangeError(
+        "maxBackgroundConcurrent must be a positive integer no greater than maxConcurrent",
+      );
+    }
     this.maxConcurrent = maxConcurrent;
+    this.maxBackgroundConcurrent = maxBackgroundConcurrent;
   }
 
   requestThumbnail(
@@ -98,16 +121,12 @@ export class RepresentationScheduler {
         state: "queued",
         subscribers: new Map(),
         backendAbortController: new AbortController(),
+        countsAgainstBackgroundLimit: false,
       };
       this.jobs.set(key, job);
       this.pushQueueEntry(job);
-    } else if (
-      job.state === "queued" &&
-      priorityRank(request.priority) > priorityRank(job.priority)
-    ) {
-      job.priority = request.priority;
-      job.revision += 1;
-      this.pushQueueEntry(job);
+    } else {
+      this.promoteJob(job, request.priority);
     }
 
     const activeJob = job;
@@ -132,6 +151,94 @@ export class RepresentationScheduler {
 
     this.pump();
     return promise;
+  }
+
+  /**
+   * Raise the priority of an existing thumbnail job without adding another
+   * subscriber or restarting backend work. Kept for callers whose desired
+   * semantics are explicitly monotonic.
+   */
+  promoteThumbnail(
+    request: ThumbnailRequest,
+    priority: RepresentationPriority,
+  ): boolean {
+    this.validateRequest({ ...request, priority });
+    const job = this.jobs.get(thumbnailRequestKey(request));
+    if (job === undefined) {
+      return false;
+    }
+    this.promoteJob(job, priority);
+    this.pump();
+    return true;
+  }
+
+  /**
+   * Reassign a job to the priority implied by the latest viewport. Unlike
+   * promotion, this permits demotion and also refreshes the FIFO position of a
+   * queued job when its priority is unchanged. That makes queue order describe
+   * the latest viewport demand instead of historical scroll positions.
+   */
+  reprioritizeThumbnail(
+    request: ThumbnailRequest,
+    priority: RepresentationPriority,
+  ): boolean {
+    this.validateRequest({ ...request, priority });
+    const job = this.jobs.get(thumbnailRequestKey(request));
+    if (job === undefined) {
+      return false;
+    }
+    this.setJobPriority(job, priority, true);
+    this.pump();
+    return true;
+  }
+
+  private promoteJob(job: PendingJob, priority: RepresentationPriority): void {
+    if (priorityRank(priority) <= priorityRank(job.priority)) {
+      return;
+    }
+    this.setJobPriority(job, priority, false);
+  }
+
+  private setJobPriority(
+    job: PendingJob,
+    priority: RepresentationPriority,
+    refreshQueueOrder: boolean,
+  ): void {
+    if (priority === job.priority) {
+      if (refreshQueueOrder && job.state === "queued") {
+        this.requeueJob(job);
+      }
+      return;
+    }
+
+    const wasBackground = job.priority !== "visible";
+    const willBeBackground = priority !== "visible";
+    job.priority = priority;
+
+    if (job.state === "queued") {
+      this.requeueJob(job);
+      return;
+    }
+
+    if (wasBackground === willBeBackground) {
+      return;
+    }
+    job.countsAgainstBackgroundLimit = willBeBackground;
+    if (willBeBackground) {
+      this.runningBackgroundCount += 1;
+    } else {
+      this.runningBackgroundCount = Math.max(
+        0,
+        this.runningBackgroundCount - 1,
+      );
+    }
+  }
+
+  private requeueJob(job: PendingJob): void {
+    job.sequence = this.nextJobSequence++;
+    job.revision += 1;
+    this.pushQueueEntry(job);
+    this.compactQueueIfNeeded();
   }
 
   private validateRequest(request: ScheduledThumbnailRequest): void {
@@ -165,18 +272,23 @@ export class RepresentationScheduler {
       }
     }
 
+    this.compactQueueIfNeeded();
     this.pump();
   }
 
   private pump(): void {
     while (this.runningCount < this.maxConcurrent) {
-      const job = this.popNextJob();
+      const job = this.popNextRunnableJob();
       if (job === undefined) {
         return;
       }
 
       job.state = "running";
+      job.countsAgainstBackgroundLimit = job.priority !== "visible";
       this.runningCount += 1;
+      if (job.countsAgainstBackgroundLimit) {
+        this.runningBackgroundCount += 1;
+      }
       void this.run(job);
     }
   }
@@ -203,10 +315,18 @@ export class RepresentationScheduler {
         subscriber.reject(error);
       }
     } finally {
+      if (job.countsAgainstBackgroundLimit) {
+        this.runningBackgroundCount = Math.max(
+          0,
+          this.runningBackgroundCount - 1,
+        );
+        job.countsAgainstBackgroundLimit = false;
+      }
       this.runningCount -= 1;
       if (this.jobs.get(job.key) === job) {
         this.jobs.delete(job.key);
       }
+      this.compactQueueIfNeeded();
       this.pump();
     }
   }
@@ -244,7 +364,49 @@ export class RepresentationScheduler {
     this.siftUp(this.queue.length - 1);
   }
 
-  private popNextJob(): PendingJob | undefined {
+  private compactQueueIfNeeded(): void {
+    if (this.queue.length < QUEUE_COMPACTION_MIN_ENTRIES) {
+      return;
+    }
+
+    let liveQueuedJobs = 0;
+    for (const job of this.jobs.values()) {
+      if (job.state === "queued" && job.subscribers.size > 0) {
+        liveQueuedJobs += 1;
+      }
+    }
+    if (
+      this.queue.length <=
+      Math.max(
+        QUEUE_COMPACTION_MIN_ENTRIES,
+        liveQueuedJobs * QUEUE_COMPACTION_STALE_FACTOR,
+      )
+    ) {
+      return;
+    }
+
+    this.queue.length = 0;
+    for (const job of this.jobs.values()) {
+      if (job.state !== "queued" || job.subscribers.size === 0) {
+        continue;
+      }
+      this.queue.push({
+        job,
+        revision: job.revision,
+        rank: priorityRank(job.priority),
+        sequence: job.sequence,
+      });
+    }
+    for (
+      let index = Math.floor(this.queue.length / 2) - 1;
+      index >= 0;
+      index -= 1
+    ) {
+      this.siftDown(index);
+    }
+  }
+
+  private popNextRunnableJob(): PendingJob | undefined {
     while (this.queue.length > 0) {
       const entry = this.popHeapRoot();
       const { job } = entry;
@@ -255,6 +417,13 @@ export class RepresentationScheduler {
         this.jobs.get(job.key) !== job
       ) {
         continue;
+      }
+      if (
+        job.priority !== "visible" &&
+        this.runningBackgroundCount >= this.maxBackgroundConcurrent
+      ) {
+        this.pushQueueEntry(job);
+        return undefined;
       }
       return job;
     }
@@ -403,5 +572,8 @@ function comesBefore(left: QueueEntry, right: QueueEntry): boolean {
   if (left.rank !== right.rank) {
     return left.rank > right.rank;
   }
-  return left.sequence < right.sequence;
+  // During active scrolling, the newest demand is the best approximation of
+  // the current viewport. Once scrolling stops no newer work arrives, so older
+  // jobs naturally drain without starvation.
+  return left.sequence > right.sequence;
 }

@@ -11,6 +11,19 @@ import type {
   BrowserTile,
   MediaBrowserController,
 } from "../../application/browser/mediaBrowserController";
+import {
+  FLOW_REVEAL_COHORT_MS,
+  FLOW_REVEAL_SCAN_STEP_MS,
+  selectFlowRevealBatch,
+} from "../flowRevealPolicy";
+import { FlowRetainedTileCache } from "../flowRetainedTileCache";
+import {
+  FLOW_SCRUB_SETTLE_MS,
+  FLOW_VIEWPORT_SETTLE_SYNC_MS,
+  FLOW_WHEEL_ACTIVITY_GRACE_MS,
+  shouldEnterFlowScrub,
+  shouldSyncFlowViewport,
+} from "../flowScrollPolicy";
 import { useMediaSelection } from "../selectionContext";
 
 const props = defineProps<{
@@ -24,16 +37,164 @@ const selection = useMediaSelection();
 const viewportElement = ref<HTMLElement | null>(null);
 const snapshot = shallowRef(props.browser.snapshot);
 const selectionSnapshot = shallowRef(selection.snapshot);
+const isScrubbing = ref(false);
+const revealRevision = ref(0);
+const retainedRevision = ref(0);
 
 let unsubscribe: (() => void) | null = null;
 let unsubscribeSelection: (() => void) | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let viewportFrame: number | null = null;
+let viewportSettleTimer: number | null = null;
+let scrubSettleTimer: number | null = null;
+let revealTimer: number | null = null;
+let lastScrollTop: number | null = null;
+let lastScrollAt = 0;
+let lastSyncedScrollTop = 0;
+let lastWheelAt = Number.NEGATIVE_INFINITY;
+let revealSessionId: string | null = null;
+let scrollDirection: -1 | 0 | 1 = 0;
+let liveScrollTop = 0;
+let liveViewportHeight = 1;
+
+const revealedMediaIds = new Set<string>();
+const pendingRevealMediaIds = new Set<string>();
+const retainedTiles = new FlowRetainedTileCache(800);
+
+const FLOW_MAX_REPRESENTATION_DPR = 1.5;
 
 const canvasStyle = computed(() => ({
   height: `${Math.max(1, snapshot.value.totalHeight)}px`,
 }));
 const selectedIds = computed(() => new Set(selectionSnapshot.value.selectedIds));
+const currentTileIds = computed(
+  () => new Set(snapshot.value.tiles.map((tile) => tile.mediaId)),
+);
+const orderedTiles = computed(() => {
+  void retainedRevision.value;
+  const current = sortTilesForDirection(snapshot.value.tiles, scrollDirection);
+  const historical = retainedTiles.historicalExcluding(currentTileIds.value);
+  return [...current, ...historical];
+});
+const columnOptions = ["auto", 1, 2, 3, 4, 5, 6, 7, 8] as const;
+const rowHeightOptions = [120, 160, 220, 300, 400] as const;
+
+function sortTilesForDirection(
+  tiles: readonly BrowserTile[],
+  direction: -1 | 0 | 1,
+): BrowserTile[] {
+  if (direction === 0) {
+    return [...tiles].sort(compareTilesTopToBottom);
+  }
+  return [...tiles].sort((left, right) => {
+    const vertical = compareTilesTopToBottom(left, right);
+    return direction > 0 ? vertical : -vertical;
+  });
+}
+
+function compareTilesTopToBottom(left: BrowserTile, right: BrowserTile): number {
+  return left.y - right.y || left.x - right.x;
+}
+
+function shouldEagerLoad(tile: BrowserTile): boolean {
+  // Every tile in the compact controller window belongs to the next useful
+  // frontier, just like the old frontend's fixed-size load batch. Historical
+  // retained tiles are already decoded, so this flag does not create new work.
+  return currentTileIds.value.has(tile.mediaId);
+}
+
+function shouldMountImage(tile: BrowserTile): boolean {
+  if (tile.thumbnailStatus !== "ready" || !tile.thumbnailUri) {
+    return false;
+  }
+  return !isScrubbing.value || isTileRevealed(tile.mediaId);
+}
+
+function isTileRevealed(mediaId: string): boolean {
+  void revealRevision.value;
+  return revealedMediaIds.has(mediaId);
+}
+
+function handleImageLoad(tile: BrowserTile): void {
+  if (revealedMediaIds.has(tile.mediaId)) {
+    retainedTiles.retain(tile);
+    retainedRevision.value += 1;
+    return;
+  }
+  pendingRevealMediaIds.add(tile.mediaId);
+  scheduleRevealCohort();
+}
+
+function scheduleRevealCohort(delay = FLOW_REVEAL_COHORT_MS): void {
+  if (revealTimer !== null || pendingRevealMediaIds.size === 0) {
+    return;
+  }
+  revealTimer = window.setTimeout(() => {
+    revealTimer = null;
+    flushRevealCohort();
+  }, delay);
+}
+
+function flushRevealCohort(): void {
+  if (pendingRevealMediaIds.size === 0) {
+    return;
+  }
+
+  const currentTiles = orderedTiles.value;
+  const currentIds = new Set(currentTiles.map((tile) => tile.mediaId));
+  for (const mediaId of [...pendingRevealMediaIds]) {
+    if (!currentIds.has(mediaId)) {
+      pendingRevealMediaIds.delete(mediaId);
+    }
+  }
+
+  const batch = selectFlowRevealBatch(
+    currentTiles,
+    pendingRevealMediaIds,
+    scrollDirection,
+    Math.max(1, liveViewportHeight),
+  );
+  if (batch.length === 0) {
+    return;
+  }
+
+  const tilesById = new Map(currentTiles.map((tile) => [tile.mediaId, tile]));
+  for (const mediaId of batch) {
+    pendingRevealMediaIds.delete(mediaId);
+    revealedMediaIds.add(mediaId);
+    const tile = tilesById.get(mediaId);
+    if (tile !== undefined) {
+      retainedTiles.retain(tile);
+    }
+  }
+  revealRevision.value += 1;
+  retainedRevision.value += 1;
+
+  if (pendingRevealMediaIds.size > 0) {
+    scheduleRevealCohort(FLOW_REVEAL_SCAN_STEP_MS);
+  }
+}
+
+function resetRevealState(sessionId: string | null): void {
+  if (sessionId === revealSessionId) {
+    return;
+  }
+  revealSessionId = sessionId;
+  revealedMediaIds.clear();
+  pendingRevealMediaIds.clear();
+  retainedTiles.resetForSession(sessionId);
+  revealRevision.value += 1;
+  retainedRevision.value += 1;
+  if (revealTimer !== null) {
+    window.clearTimeout(revealTimer);
+    revealTimer = null;
+  }
+}
+
+function clearRetainedLayout(): void {
+  retainedTiles.clear();
+  retainedRevision.value += 1;
+}
 
 function tileStyle(tile: BrowserTile): Record<string, string> {
   return {
@@ -49,6 +210,107 @@ function selectTile(tile: BrowserTile, event: MouseEvent): void {
   } else {
     selection.replace(tile.mediaId);
   }
+}
+
+function handleColumnCountChange(event: Event): void {
+  const target = event.currentTarget;
+  if (!(target instanceof HTMLSelectElement)) {
+    return;
+  }
+  clearRetainedLayout();
+  props.browser.setColumnCount(
+    target.value === "auto" ? "auto" : Number(target.value),
+  );
+}
+
+function handleRowHeightChange(event: Event): void {
+  const target = event.currentTarget;
+  if (!(target instanceof HTMLSelectElement)) {
+    return;
+  }
+  clearRetainedLayout();
+  props.browser.setJustifiedTargetRowHeight(Number(target.value));
+}
+
+function handleWheel(): void {
+  lastWheelAt = performance.now();
+  if (isScrubbing.value) {
+    isScrubbing.value = false;
+    if (scrubSettleTimer !== null) {
+      window.clearTimeout(scrubSettleTimer);
+      scrubSettleTimer = null;
+    }
+  }
+}
+
+function handleScroll(): void {
+  const element = viewportElement.value;
+  if (element === null || element.clientHeight <= 0) {
+    return;
+  }
+
+  const now = performance.now();
+  liveScrollTop = element.scrollTop;
+  liveViewportHeight = element.clientHeight;
+
+  if (lastScrollTop !== null) {
+    const delta = element.scrollTop - lastScrollTop;
+    if (delta !== 0) {
+      scrollDirection = delta > 0 ? 1 : -1;
+    }
+    const elapsedMs = Math.max(1, now - lastScrollAt);
+    if (
+      shouldEnterFlowScrub({
+        previousScrollTop: lastScrollTop,
+        scrollTop: element.scrollTop,
+        viewportHeight: element.clientHeight,
+        elapsedMs,
+        recentWheel: now - lastWheelAt <= FLOW_WHEEL_ACTIVITY_GRACE_MS,
+      })
+    ) {
+      isScrubbing.value = true;
+    }
+  }
+
+  lastScrollTop = element.scrollTop;
+  lastScrollAt = now;
+
+  if (isScrubbing.value) {
+    scheduleScrubSettle();
+    return;
+  }
+
+  if (
+    shouldSyncFlowViewport({
+      syncedScrollTop: lastSyncedScrollTop,
+      scrollTop: element.scrollTop,
+      viewportHeight: element.clientHeight,
+    })
+  ) {
+    scheduleViewportSync();
+  }
+  scheduleViewportSettleSync();
+}
+
+function scheduleScrubSettle(): void {
+  if (scrubSettleTimer !== null) {
+    window.clearTimeout(scrubSettleTimer);
+  }
+  scrubSettleTimer = window.setTimeout(() => {
+    scrubSettleTimer = null;
+    isScrubbing.value = false;
+    syncViewport();
+  }, FLOW_SCRUB_SETTLE_MS);
+}
+
+function scheduleViewportSettleSync(): void {
+  if (viewportSettleTimer !== null) {
+    window.clearTimeout(viewportSettleTimer);
+  }
+  viewportSettleTimer = window.setTimeout(() => {
+    viewportSettleTimer = null;
+    syncViewport();
+  }, FLOW_VIEWPORT_SETTLE_SYNC_MS);
 }
 
 function scheduleViewportSync(): void {
@@ -67,16 +329,25 @@ function syncViewport(): void {
     return;
   }
 
+  liveScrollTop = element.scrollTop;
+  liveViewportHeight = element.clientHeight;
+  lastSyncedScrollTop = element.scrollTop;
   props.browser.setViewport({
     width: element.clientWidth,
     height: element.clientHeight,
     scrollTop: element.scrollTop,
-    devicePixelRatio: Math.max(1, window.devicePixelRatio || 1),
+    devicePixelRatio: Math.min(
+      FLOW_MAX_REPRESENTATION_DPR,
+      Math.max(1, window.devicePixelRatio || 1),
+    ),
   });
 }
 
 onMounted(() => {
   unsubscribe = props.browser.subscribe((nextSnapshot) => {
+    resetRevealState(nextSnapshot.sessionId);
+    retainedTiles.updateCurrent(nextSnapshot.tiles);
+    retainedRevision.value += 1;
     snapshot.value = nextSnapshot;
   });
   unsubscribeSelection = selection.subscribe((nextSnapshot) => {
@@ -85,8 +356,16 @@ onMounted(() => {
 
   const element = viewportElement.value;
   if (element !== null) {
-    resizeObserver = new ResizeObserver(scheduleViewportSync);
+    resizeObserver = new ResizeObserver(() => {
+      clearRetainedLayout();
+      scheduleViewportSync();
+    });
     resizeObserver.observe(element);
+    lastScrollTop = element.scrollTop;
+    lastSyncedScrollTop = element.scrollTop;
+    lastScrollAt = performance.now();
+    liveScrollTop = element.scrollTop;
+    liveViewportHeight = Math.max(1, element.clientHeight);
   }
   scheduleViewportSync();
 });
@@ -98,6 +377,15 @@ onBeforeUnmount(() => {
   if (viewportFrame !== null) {
     window.cancelAnimationFrame(viewportFrame);
   }
+  if (viewportSettleTimer !== null) {
+    window.clearTimeout(viewportSettleTimer);
+  }
+  if (scrubSettleTimer !== null) {
+    window.clearTimeout(scrubSettleTimer);
+  }
+  if (revealTimer !== null) {
+    window.clearTimeout(revealTimer);
+  }
 });
 </script>
 
@@ -105,12 +393,44 @@ onBeforeUnmount(() => {
   <section
     ref="viewportElement"
     class="flow-viewport"
+    :class="{ scrubbing: isScrubbing }"
     aria-label="Flow media browser"
-    @scroll.passive="scheduleViewportSync"
+    @wheel.passive="handleWheel"
+    @scroll.passive="handleScroll"
   >
+    <div class="flow-density-controls" aria-label="Flow density controls">
+      <label v-if="snapshot.layoutMode === 'masonry'" class="density-control">
+        <span>Columns</span>
+        <select :value="snapshot.columnCount" @change="handleColumnCountChange">
+          <option
+            v-for="option in columnOptions"
+            :key="String(option)"
+            :value="option"
+          >
+            {{ option === "auto" ? "Auto" : option }}
+          </option>
+        </select>
+      </label>
+      <label v-else class="density-control">
+        <span>Row</span>
+        <select
+          :value="snapshot.justifiedTargetRowHeight"
+          @change="handleRowHeightChange"
+        >
+          <option
+            v-for="height in rowHeightOptions"
+            :key="height"
+            :value="height"
+          >
+            {{ height }} px
+          </option>
+        </select>
+      </label>
+    </div>
+
     <div class="flow-canvas" :style="canvasStyle">
       <figure
-        v-for="tile in snapshot.tiles"
+        v-for="tile in orderedTiles"
         :key="tile.mediaId"
         class="flow-tile"
         :class="{
@@ -123,13 +443,16 @@ onBeforeUnmount(() => {
         @dblclick="emit('activate', tile.mediaId)"
       >
         <img
-          v-if="tile.thumbnailStatus === 'ready' && tile.thumbnailUri"
+          v-if="shouldMountImage(tile)"
           class="flow-image"
-          :src="tile.thumbnailUri"
+          :class="{ revealed: isTileRevealed(tile.mediaId) }"
+          :src="tile.thumbnailUri ?? undefined"
           :alt="tile.name"
           decoding="async"
-          loading="eager"
+          :loading="shouldEagerLoad(tile) ? 'eager' : 'lazy'"
+          :fetchpriority="tile.priority === 'visible' ? 'high' : 'auto'"
           draggable="false"
+          @load="handleImageLoad(tile)"
         />
         <div v-else class="flow-placeholder">
           <span v-if="tile.thumbnailStatus === 'error'" class="placeholder-label">
@@ -155,6 +478,40 @@ onBeforeUnmount(() => {
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
   contain: strict;
+}
+
+.flow-density-controls {
+  position: sticky;
+  top: 8px;
+  z-index: 4;
+  display: flex;
+  justify-content: flex-end;
+  width: fit-content;
+  margin: 8px 8px -39px auto;
+  pointer-events: auto;
+}
+
+.density-control {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 31px;
+  padding: 4px 6px 4px 9px;
+  border: 1px solid var(--wf-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--wf-surface) 92%, transparent);
+  color: var(--wf-text-muted);
+  font-size: 0.72rem;
+  backdrop-filter: blur(8px);
+}
+
+.density-control select {
+  min-height: 24px;
+  border: 0;
+  border-radius: 5px;
+  background: var(--wf-surface-raised);
+  color: var(--wf-text);
+  font: inherit;
 }
 
 .flow-canvas {
@@ -188,8 +545,13 @@ onBeforeUnmount(() => {
   height: 100%;
   display: block;
   object-fit: cover;
+  opacity: 0;
   user-select: none;
   -webkit-user-drag: none;
+}
+
+.flow-image.revealed {
+  opacity: 1;
 }
 
 .flow-placeholder {
@@ -218,6 +580,11 @@ onBeforeUnmount(() => {
   border-radius: 999px;
   background: var(--wf-loading-indicator);
   animation: pulse 1.1s ease-in-out infinite alternate;
+}
+
+.flow-viewport.scrubbing .loading-pulse {
+  animation: none;
+  opacity: 0.4;
 }
 
 @keyframes pulse {

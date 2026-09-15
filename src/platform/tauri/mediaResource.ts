@@ -13,7 +13,14 @@ export class TauriMediaResourcePort implements MediaResourcePort {
       throw new RangeError("resourceKey has an invalid format");
     }
 
-    return convertFileSrc(resourceKey, MEDIA_PROTOCOL);
+    // convertFileSrc treats its first argument as one filesystem path and URL
+    // encodes it wholesale. Passing an opaque key such as "1/37" therefore
+    // produces "1%2F37", while the Rust custom-protocol handler expects the
+    // path segments "/1/37". Use convertFileSrc only to obtain the
+    // platform-specific custom-protocol origin, then append the already-
+    // validated opaque key as URL path segments.
+    const protocolRoot = convertFileSrc("", MEDIA_PROTOCOL);
+    return `${protocolRoot.replace(/\/$/, "")}/${resourceKey}`;
   }
 }
 

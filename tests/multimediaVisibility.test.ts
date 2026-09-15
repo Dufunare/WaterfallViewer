@@ -28,7 +28,7 @@ function media(
 }
 
 describe("multimedia browsing geometry", () => {
-  it("uses deterministic lightweight fallbacks for video and audio only", () => {
+  it("uses deterministic lightweight fallbacks when visual metadata is unavailable", () => {
     expect(projectMediaVisual(media("video", "video"))).toEqual({
       kind: "visual",
       width: 16,
@@ -42,14 +42,18 @@ describe("multimedia browsing geometry", () => {
       source: "fallback",
     });
     expect(projectMediaVisual(media("image", "image"))).toEqual({
-      kind: "deferred",
-      reason: "missing-visual",
+      kind: "visual",
+      width: 1,
+      height: 1,
+      source: "fallback",
     });
     expect(
       projectMediaVisual(media("broken", "animated-image", { width: 0, height: 10 })),
     ).toEqual({
-      kind: "deferred",
-      reason: "invalid-visual",
+      kind: "visual",
+      width: 1,
+      height: 1,
+      source: "fallback",
     });
   });
 
@@ -62,7 +66,7 @@ describe("multimedia browsing geometry", () => {
     );
   });
 
-  it("keeps video and audio visible in masonry while malformed images remain deferred", () => {
+  it("keeps all accepted media visible in masonry even when image metadata is unavailable", () => {
     const model = new MasonryFlowModel({
       viewport: { width: 220, height: 180 },
       columnCount: 2,
@@ -78,18 +82,19 @@ describe("multimedia browsing geometry", () => {
     expect(snapshot.layout.nodes.map((node) => node.mediaId)).toEqual([
       "video",
       "audio",
+      "image",
     ]);
-    expect(snapshot.deferredMedia).toEqual([
-      { mediaId: "image", reason: "missing-visual" },
-    ]);
+    expect(snapshot.deferredMedia).toEqual([]);
 
     const videoNode = snapshot.layout.nodes[0];
     const audioNode = snapshot.layout.nodes[1];
+    const imageNode = snapshot.layout.nodes[2];
     expect(videoNode.width / videoNode.height).toBeCloseTo(16 / 9);
     expect(audioNode.width / audioNode.height).toBeCloseTo(1);
+    expect(imageNode.width / imageNode.height).toBeCloseTo(1);
   });
 
-  it("keeps video and audio visible in justified rows and flushes them at terminal", () => {
+  it("keeps accepted media visible in justified rows and flushes them at terminal", () => {
     const model = new JustifiedFlowModel({
       viewport: { width: 600, height: 300 },
       targetRowHeight: 180,
@@ -109,10 +114,9 @@ describe("multimedia browsing geometry", () => {
     expect(snapshot.layout.nodes.map((node) => node.mediaId)).toEqual([
       "video",
       "audio",
+      "image",
     ]);
-    expect(snapshot.deferredMedia).toEqual([
-      { mediaId: "image", reason: "missing-visual" },
-    ]);
+    expect(snapshot.deferredMedia).toEqual([]);
     expect(snapshot.layout.pendingCount).toBe(0);
   });
 

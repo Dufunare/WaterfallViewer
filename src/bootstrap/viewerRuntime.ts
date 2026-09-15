@@ -11,6 +11,7 @@ import type { MediaResourcePort } from "../application/ports/mediaResource";
 import type { MediaScanPort } from "../application/ports/mediaScan";
 import type { SourcePickerPort } from "../application/ports/sourcePicker";
 import { MediaQueryController } from "../application/query/mediaQueryController";
+import { BrowserNativeRepresentationPort } from "../application/resources/browserNativeRepresentation";
 import { RepresentationScheduler } from "../application/resources/representationScheduler";
 import { MediaSelectionController } from "../application/selection/mediaSelectionController";
 import { MediaActivationController } from "../application/viewer/mediaActivationController";
@@ -28,6 +29,7 @@ export interface ViewerRuntimePorts {
 export interface ViewerRuntimeOptions {
   sessionIdFactory?: SessionIdFactory;
   representationMaxConcurrent?: number;
+  representationMaxBackgroundConcurrent?: number;
 }
 
 export interface ViewerRuntime {
@@ -52,10 +54,31 @@ export function createViewerRuntime(
   );
   const query = new MediaQueryController(sessionController);
   const selection = new MediaSelectionController(sessionController);
-  const representationScheduler = new RepresentationScheduler(
+
+  // Canvas/preview keep the derived-representation pipeline because they need
+  // explicit LOD behavior. Flow deliberately uses a separate browser-native
+  // adapter: source resource keys are handed straight to the WebView so image
+  // decoding, target-size rasterization and decoded-image caching are owned by
+  // the browser engine instead of a Rust decode -> resize -> encode round trip.
+  const derivedRepresentationScheduler = new RepresentationScheduler(
     ports.representation,
-    { maxConcurrent: options.representationMaxConcurrent ?? 6 },
+    {
+      maxConcurrent: options.representationMaxConcurrent ?? 3,
+      maxBackgroundConcurrent:
+        options.representationMaxBackgroundConcurrent ?? 1,
+    },
   );
+  const flowRepresentationScheduler = new RepresentationScheduler(
+    new BrowserNativeRepresentationPort(),
+    {
+      // The adapter itself performs no decode or I/O. Keep handoff broad enough
+      // to resemble the old frontend's ~25-image load batches while leaving the
+      // actual disk/decode scheduling to Chromium/WebView.
+      maxConcurrent: 32,
+      maxBackgroundConcurrent: 32,
+    },
+  );
+
   const workspace = new ViewerWorkspaceController(
     sessionController,
     ports.sourcePicker,
@@ -68,12 +91,26 @@ export function createViewerRuntime(
     activation,
     ports.detail,
   );
-  const flowBrowser = new MediaBrowserController({
-    sessionController,
-    sourcePicker: ports.sourcePicker,
-    representationScheduler,
-    resourcePort: ports.resource,
-  });
+  const flowBrowser = new MediaBrowserController(
+    {
+      sessionController,
+      sourcePicker: ports.sourcePicker,
+      representationScheduler: flowRepresentationScheduler,
+      resourcePort: ports.resource,
+    },
+    {
+      // In browser-native mode maxThumbnailEdge is only a scheduling/cache key;
+      // the source file itself is delivered unchanged to the WebView.
+      maxThumbnailEdge: 768,
+      // Keep the active loading frontier compact. Historical decoded media is
+      // retained separately by the presentation layer; expanding this query
+      // window caused every viewport refresh to diff/decode too much work.
+      renderWindowScreens: 1.5,
+      prefetchWindowScreens: 2.5,
+      // Resource-key state is cheap, but this no longer drives DOM residency.
+      warmThumbnailCount: 768,
+    },
+  );
   const canvasScene = new CanvasSceneModel({
     atlas: {
       worldWidth: 4096,
@@ -98,7 +135,7 @@ export function createViewerRuntime(
       {
         sessionController,
         sourcePicker: ports.sourcePicker,
-        representationScheduler,
+        representationScheduler: derivedRepresentationScheduler,
         resourcePort: ports.resource,
         scene: canvasScene,
       },
