@@ -163,9 +163,25 @@ function buildLayoutShell(): void {
   }
 }
 
+function shortestColumn(): HTMLElement | null {
+  if (columnElements.length === 0) {
+    return null;
+  }
+  return columnElements.reduce((shortest, column) =>
+    shortest.offsetHeight <= column.offsetHeight ? shortest : column,
+  );
+}
+
+function loadedEndReference(): HTMLElement | null {
+  if (snapshot.value.layoutMode === "masonry") {
+    minColumn = shortestColumn() ?? minColumn;
+  }
+  return minColumn ?? imgboxElement.value;
+}
+
 function nearLoadedEnd(): boolean {
   const viewport = viewportElement.value;
-  const reference = minColumn ?? imgboxElement.value;
+  const reference = loadedEndReference();
   if (viewport === null || reference === null) {
     return false;
   }
@@ -294,10 +310,12 @@ function appendWrap(wrap: HTMLElement): void {
     if (columnElements.length === 0) {
       buildLayoutShell();
     }
-    minColumn = columnElements.reduce((shortest, column) =>
-      shortest.offsetHeight <= column.offsetHeight ? shortest : column,
-    );
-    minColumn.appendChild(wrap);
+    const target = shortestColumn();
+    if (target === null) {
+      return;
+    }
+    target.appendChild(wrap);
+    minColumn = shortestColumn() ?? target;
     return;
   }
 
