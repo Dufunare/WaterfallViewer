@@ -23,6 +23,12 @@ interface LegacyItemState {
   loadEpoch: number;
 }
 
+interface PendingAppend {
+  wrap: HTMLElement;
+  epoch: number;
+  completesLoad: boolean;
+}
+
 const selection = useMediaSelection();
 const viewportElement = ref<HTMLElement | null>(null);
 const imgboxElement = ref<HTMLElement | null>(null);
@@ -36,12 +42,18 @@ let layoutEpoch = 0;
 let loading = 0;
 let renderedCount = 0;
 let columnElements: HTMLElement[] = [];
-let minColumn: HTMLElement | null = null;
+let columnHeights: number[] = [];
+let masonryColumnWidth = 1;
+let masonryFrontierHeight = 0;
 let queue: LegacyFlowItem[] = [];
 let queuedIds = new Set<string>();
 let itemStates = new Map<string, LegacyItemState>();
 let activeBatchRemaining = 0;
 let activeBatchEpoch = 0;
+let pendingAppends: PendingAppend[] = [];
+let pendingAppendIds = new Set<string>();
+let appendFrame: number | null = null;
+let lastScrollAt = Number.NEGATIVE_INFINITY;
 let destroyed = false;
 let loadTimer: number | null = null;
 
@@ -50,6 +62,9 @@ const LEGACY_COLUMN_COUNT = 4;
 const LEGACY_COLUMN_GAP = 10;
 const LEGACY_ROW_GAP = 10;
 const LEGACY_JUSTIFIED_HEIGHT = 220;
+const SCROLL_ACTIVE_WINDOW_MS = 90;
+const APPENDS_PER_SCROLL_FRAME = 2;
+const APPENDS_PER_IDLE_FRAME = 10;
 
 function handleBrowserEvent(event: LegacyFlowBrowserEvent): void {
   snapshot.value = event.snapshot;
@@ -79,6 +94,7 @@ function hardReset(
   items: readonly LegacyFlowItem[],
 ): void {
   cancelScheduledLoad();
+  cancelPendingAppends();
   layoutEpoch += 1;
   loading = 0;
   renderedCount = 0;
@@ -101,6 +117,7 @@ function hardReset(
 
 function softReflow(items: readonly LegacyFlowItem[]): void {
   cancelScheduledLoad();
+  cancelPendingAppends();
   layoutEpoch += 1;
   loading = 0;
   renderedCount = 0;
@@ -156,7 +173,8 @@ function buildLayoutShell(): void {
 
   imgbox.replaceChildren();
   columnElements = [];
-  minColumn = imgbox;
+  columnHeights = [];
+  masonryFrontierHeight = 0;
 
   if (snapshot.value.layoutMode === "masonry") {
     imgbox.className = "legacy-imgbox masonry";
@@ -165,39 +183,100 @@ function buildLayoutShell(): void {
       column.className = "legacy-column";
       imgbox.appendChild(column);
       columnElements.push(column);
+      columnHeights.push(0);
     }
-    minColumn = columnElements[0] ?? imgbox;
+    updateMasonryColumnWidth();
   } else {
     imgbox.className = "legacy-imgbox justified";
   }
 }
 
-function shortestColumn(): HTMLElement | null {
-  if (columnElements.length === 0) {
-    return null;
+function updateMasonryColumnWidth(): void {
+  const viewport = viewportElement.value;
+  const imgbox = imgboxElement.value;
+  const availableWidth = viewport?.clientWidth ?? imgbox?.clientWidth ?? 1;
+  const totalGap = LEGACY_COLUMN_GAP * Math.max(0, LEGACY_COLUMN_COUNT - 1);
+  masonryColumnWidth = Math.max(1, (availableWidth - totalGap) / LEGACY_COLUMN_COUNT);
+}
+
+function rebuildMasonryHeightModel(): void {
+  if (snapshot.value.layoutMode !== "masonry" || columnElements.length === 0) {
+    return;
   }
-  return columnElements.reduce((shortest, column) =>
-    shortest.offsetHeight <= column.offsetHeight ? shortest : column,
-  );
+
+  updateMasonryColumnWidth();
+  columnHeights = columnElements.map((column) => {
+    let height = 0;
+    let count = 0;
+    for (const child of Array.from(column.children)) {
+      const img = child.firstElementChild;
+      if (!(img instanceof HTMLImageElement)) {
+        continue;
+      }
+      if (count > 0) {
+        height += LEGACY_ROW_GAP;
+      }
+      height += estimatedMasonryImageHeight(img);
+      count += 1;
+    }
+    return height;
+  });
+  updateMasonryFrontier();
+}
+
+function estimatedMasonryImageHeight(img: HTMLImageElement): number {
+  const width = Math.max(1, img.naturalWidth);
+  const height = Math.max(1, img.naturalHeight);
+  return masonryColumnWidth * (height / width);
+}
+
+function shortestColumnIndex(): number {
+  if (columnHeights.length === 0) {
+    return -1;
+  }
+  let shortestIndex = 0;
+  let shortestHeight = columnHeights[0];
+  for (let index = 1; index < columnHeights.length; index += 1) {
+    if (columnHeights[index] < shortestHeight) {
+      shortestHeight = columnHeights[index];
+      shortestIndex = index;
+    }
+  }
+  return shortestIndex;
+}
+
+function updateMasonryFrontier(): void {
+  if (columnHeights.length === 0) {
+    masonryFrontierHeight = 0;
+    return;
+  }
+  masonryFrontierHeight = Math.min(...columnHeights);
 }
 
 function nearLoadedEnd(): boolean {
   const viewport = viewportElement.value;
-  const reference = minColumn ?? imgboxElement.value;
-  if (viewport === null || reference === null) {
+  const imgbox = imgboxElement.value;
+  if (viewport === null || imgbox === null) {
     return false;
   }
   if (renderedCount === 0) {
     return true;
   }
 
-  // Keep scroll work equivalent to the legacy page: one frontier read only.
-  // The shortest-column scan happens when an image is appended, never while
-  // native scrolling is in progress.
+  // Masonry uses the cached numerical frontier. No column geometry is read
+  // during scrolling, so a scroll event cannot synchronously force layout.
+  const frontier =
+    snapshot.value.layoutMode === "masonry"
+      ? masonryFrontierHeight
+      : imgbox.scrollHeight;
   return (
     viewport.scrollTop + viewport.clientHeight >=
-    reference.scrollHeight - viewport.clientHeight
+    frontier - viewport.clientHeight
   );
+}
+
+function hasPendingVisualWork(): boolean {
+  return loading > 0 || pendingAppends.length > 0;
 }
 
 function loadNext(): void {
@@ -206,7 +285,7 @@ function loadNext(): void {
   }
 
   if (activeBatchRemaining === 0) {
-    if (loading > 0 || !nearLoadedEnd()) {
+    if (hasPendingVisualWork() || !nearLoadedEnd()) {
       return;
     }
     activeBatchRemaining = LEGACY_BATCH_SIZE;
@@ -246,7 +325,7 @@ function loadNext(): void {
     }
 
     if (state.status === "ready" && state.wrap !== null) {
-      appendWrap(state.wrap);
+      queueAppend(state.wrap, activeBatchEpoch, false);
       continue;
     }
 
@@ -257,7 +336,7 @@ function loadNext(): void {
     startImageLoad(state, activeBatchEpoch);
   }
 
-  if (activeBatchRemaining === 0 && loading === 0) {
+  if (activeBatchRemaining === 0 && !hasPendingVisualWork()) {
     scheduleLoadNext(0);
   }
 }
@@ -267,7 +346,7 @@ function finishPendingProducerBatch(): void {
     return;
   }
   activeBatchRemaining = 0;
-  if (loading === 0) {
+  if (!hasPendingVisualWork()) {
     scheduleLoadNext(0);
   }
 }
@@ -300,12 +379,10 @@ function startImageLoad(state: LegacyItemState, epoch: number): void {
     const wrap = createWrap(state, img);
     state.wrap = wrap;
     state.status = "ready";
-    appendWrap(wrap);
 
-    loading = Math.max(0, loading - 1);
-    if (loading === 0 && activeBatchRemaining === 0) {
-      loadNext();
-    }
+    // Image completion may arrive in a burst while native scrolling is active.
+    // Keep those callbacks layout-free and commit the ready DOM from rAF.
+    queueAppend(wrap, epoch, true);
   };
 
   img.onload = onComplete;
@@ -323,6 +400,75 @@ function createWrap(state: LegacyItemState, img: HTMLImageElement): HTMLElement 
   return wrap;
 }
 
+function queueAppend(
+  wrap: HTMLElement,
+  epoch: number,
+  completesLoad: boolean,
+): void {
+  const mediaId = wrap.dataset.mediaId;
+  if (mediaId !== undefined && pendingAppendIds.has(mediaId)) {
+    return;
+  }
+  if (mediaId !== undefined) {
+    pendingAppendIds.add(mediaId);
+  }
+  pendingAppends.push({ wrap, epoch, completesLoad });
+  scheduleAppendFrame();
+}
+
+function scheduleAppendFrame(): void {
+  if (appendFrame !== null || destroyed || pendingAppends.length === 0) {
+    return;
+  }
+  appendFrame = window.requestAnimationFrame(flushPendingAppends);
+}
+
+function flushPendingAppends(timestamp: number): void {
+  appendFrame = null;
+  if (destroyed) {
+    return;
+  }
+
+  const scrollActive = timestamp - lastScrollAt < SCROLL_ACTIVE_WINDOW_MS;
+  const budget = scrollActive
+    ? APPENDS_PER_SCROLL_FRAME
+    : APPENDS_PER_IDLE_FRAME;
+  let committed = 0;
+
+  while (committed < budget && pendingAppends.length > 0) {
+    const pending = pendingAppends.shift();
+    if (pending === undefined) {
+      break;
+    }
+    const mediaId = pending.wrap.dataset.mediaId;
+    if (mediaId !== undefined) {
+      pendingAppendIds.delete(mediaId);
+    }
+
+    if (pending.epoch !== layoutEpoch) {
+      if (pending.completesLoad) {
+        loading = Math.max(0, loading - 1);
+      }
+      continue;
+    }
+
+    appendWrap(pending.wrap);
+    if (pending.completesLoad) {
+      loading = Math.max(0, loading - 1);
+    }
+    committed += 1;
+  }
+
+  if (pendingAppends.length > 0) {
+    scheduleAppendFrame();
+    return;
+  }
+
+  if (loading === 0 && activeBatchRemaining === 0) {
+    scheduleLoadNext(0);
+  }
+}
+
 function appendWrap(wrap: HTMLElement): void {
   const imgbox = imgboxElement.value;
   if (imgbox === null) {
@@ -335,17 +481,20 @@ function appendWrap(wrap: HTMLElement): void {
   wrap.style.removeProperty("flex-grow");
 
   if (snapshot.value.layoutMode === "masonry") {
-    if (columnElements.length === 0) {
+    if (columnElements.length === 0 || columnHeights.length === 0) {
       buildLayoutShell();
     }
-    // Match the original loadImg(): remember the column selected immediately
-    // before append. Do not rescan after append; scroll-time loadNext() reuses
-    // this reference and therefore avoids four synchronous offsetHeight reads.
-    minColumn = shortestColumn();
-    if (minColumn === null) {
+    const targetIndex = shortestColumnIndex();
+    const target = columnElements[targetIndex];
+    const img = wrap.firstElementChild;
+    if (targetIndex < 0 || target === undefined || !(img instanceof HTMLImageElement)) {
       return;
     }
-    minColumn.appendChild(wrap);
+
+    target.appendChild(wrap);
+    const gap = columnHeights[targetIndex] > 0 ? LEGACY_ROW_GAP : 0;
+    columnHeights[targetIndex] += gap + estimatedMasonryImageHeight(img);
+    updateMasonryFrontier();
     return;
   }
 
@@ -358,7 +507,6 @@ function appendWrap(wrap: HTMLElement): void {
     wrap.style.flexGrow = String(ratio);
   }
   imgbox.appendChild(wrap);
-  minColumn = imgbox;
 }
 
 function mediaIdFromEvent(event: Event): string | null {
@@ -408,10 +556,12 @@ function applySelectionClass(wrap: HTMLElement, mediaId: string): void {
 }
 
 function handleScroll(): void {
+  lastScrollAt = performance.now();
   loadNext();
 }
 
 function handleResize(): void {
+  rebuildMasonryHeightModel();
   loadNext();
 }
 
@@ -430,6 +580,15 @@ function cancelScheduledLoad(): void {
     window.clearTimeout(loadTimer);
     loadTimer = null;
   }
+}
+
+function cancelPendingAppends(): void {
+  if (appendFrame !== null) {
+    window.cancelAnimationFrame(appendFrame);
+    appendFrame = null;
+  }
+  pendingAppends = [];
+  pendingAppendIds.clear();
 }
 
 function detachImageCallbacks(state: LegacyItemState): void {
@@ -472,6 +631,7 @@ onBeforeUnmount(() => {
   unsubscribeSelection?.();
   resizeObserver?.disconnect();
   cancelScheduledLoad();
+  cancelPendingAppends();
   for (const state of itemStates.values()) {
     detachImageCallbacks(state);
   }
