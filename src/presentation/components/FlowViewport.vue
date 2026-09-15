@@ -11,6 +11,10 @@ import type {
   BrowserTile,
   MediaBrowserController,
 } from "../../application/browser/mediaBrowserController";
+import {
+  FLOW_SCRUB_SETTLE_MS,
+  shouldEnterFlowScrub,
+} from "../flowScrollPolicy";
 import { useMediaSelection } from "../selectionContext";
 
 const props = defineProps<{
@@ -24,11 +28,15 @@ const selection = useMediaSelection();
 const viewportElement = ref<HTMLElement | null>(null);
 const snapshot = shallowRef(props.browser.snapshot);
 const selectionSnapshot = shallowRef(selection.snapshot);
+const isScrubbing = ref(false);
 
 let unsubscribe: (() => void) | null = null;
 let unsubscribeSelection: (() => void) | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let viewportFrame: number | null = null;
+let scrubSettleTimer: number | null = null;
+let lastScrollTop: number | null = null;
+let lastScrollAt = 0;
 
 const FLOW_MAX_REPRESENTATION_DPR = 1.5;
 
@@ -36,10 +44,16 @@ const canvasStyle = computed(() => ({
   height: `${Math.max(1, snapshot.value.totalHeight)}px`,
 }));
 const selectedIds = computed(() => new Set(selectionSnapshot.value.selectedIds));
-const orderedTiles = computed(() => [
-  ...snapshot.value.tiles.filter((tile) => tile.priority === "visible"),
-  ...snapshot.value.tiles.filter((tile) => tile.priority !== "visible"),
-]);
+const orderedTiles = computed(() => {
+  const visible = snapshot.value.tiles.filter((tile) => tile.priority === "visible");
+  if (isScrubbing.value) {
+    return visible;
+  }
+  return [
+    ...visible,
+    ...snapshot.value.tiles.filter((tile) => tile.priority !== "visible"),
+  ];
+});
 const columnOptions = ["auto", 1, 2, 3, 4, 5, 6, 7, 8] as const;
 const rowHeightOptions = [120, 160, 220, 300, 400] as const;
 
@@ -75,6 +89,47 @@ function handleRowHeightChange(event: Event): void {
     return;
   }
   props.browser.setJustifiedTargetRowHeight(Number(target.value));
+}
+
+function handleScroll(): void {
+  const element = viewportElement.value;
+  if (element !== null && element.clientHeight > 0) {
+    const now = performance.now();
+    if (lastScrollTop !== null) {
+      const elapsedMs = Math.max(1, now - lastScrollAt);
+      if (
+        shouldEnterFlowScrub({
+          previousScrollTop: lastScrollTop,
+          scrollTop: element.scrollTop,
+          viewportHeight: element.clientHeight,
+          elapsedMs,
+        })
+      ) {
+        isScrubbing.value = true;
+      }
+    }
+    lastScrollTop = element.scrollTop;
+    lastScrollAt = now;
+
+    if (isScrubbing.value) {
+      scheduleScrubSettle();
+    }
+  }
+
+  scheduleViewportSync();
+}
+
+function scheduleScrubSettle(): void {
+  if (scrubSettleTimer !== null) {
+    window.clearTimeout(scrubSettleTimer);
+  }
+  scrubSettleTimer = window.setTimeout(() => {
+    scrubSettleTimer = null;
+    isScrubbing.value = false;
+    // The controller already tracks the latest geometry. Re-sync once the
+    // gesture settles so the final viewport gets first chance to mount media.
+    scheduleViewportSync();
+  }, FLOW_SCRUB_SETTLE_MS);
 }
 
 function scheduleViewportSync(): void {
@@ -119,6 +174,8 @@ onMounted(() => {
   if (element !== null) {
     resizeObserver = new ResizeObserver(scheduleViewportSync);
     resizeObserver.observe(element);
+    lastScrollTop = element.scrollTop;
+    lastScrollAt = performance.now();
   }
   scheduleViewportSync();
 });
@@ -130,6 +187,9 @@ onBeforeUnmount(() => {
   if (viewportFrame !== null) {
     window.cancelAnimationFrame(viewportFrame);
   }
+  if (scrubSettleTimer !== null) {
+    window.clearTimeout(scrubSettleTimer);
+  }
 });
 </script>
 
@@ -137,8 +197,9 @@ onBeforeUnmount(() => {
   <section
     ref="viewportElement"
     class="flow-viewport"
+    :class="{ scrubbing: isScrubbing }"
     aria-label="Flow media browser"
-    @scroll.passive="scheduleViewportSync"
+    @scroll.passive="handleScroll"
   >
     <div class="flow-density-controls" aria-label="Flow density controls">
       <label v-if="snapshot.layoutMode === 'masonry'" class="density-control">
@@ -185,12 +246,16 @@ onBeforeUnmount(() => {
         @dblclick="emit('activate', tile.mediaId)"
       >
         <img
-          v-if="tile.thumbnailStatus === 'ready' && tile.thumbnailUri"
+          v-if="
+            !isScrubbing &&
+            tile.thumbnailStatus === 'ready' &&
+            tile.thumbnailUri
+          "
           class="flow-image"
           :src="tile.thumbnailUri"
           :alt="tile.name"
           decoding="async"
-          loading="eager"
+          :loading="tile.priority === 'visible' ? 'eager' : 'lazy'"
           :fetchpriority="tile.priority === 'visible' ? 'high' : 'low'"
           draggable="false"
         />
@@ -315,6 +380,11 @@ onBeforeUnmount(() => {
   border-radius: 999px;
   background: var(--wf-loading-indicator);
   animation: pulse 1.1s ease-in-out infinite alternate;
+}
+
+.flow-viewport.scrubbing .loading-pulse {
+  animation: none;
+  opacity: 0.4;
 }
 
 @keyframes pulse {
