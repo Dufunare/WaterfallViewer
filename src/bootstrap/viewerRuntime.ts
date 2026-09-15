@@ -71,9 +71,9 @@ export function createViewerRuntime(
   const flowRepresentationScheduler = new RepresentationScheduler(
     new BrowserNativeRepresentationPort(),
     {
-      // The adapter itself performs no decode or I/O. A wider handoff window is
-      // intentional: it approximates the old frontend's ~25-image batches and
-      // lets Chromium/WebView own the real resource/decode scheduling.
+      // The adapter itself performs no decode or I/O. Keep handoff broad enough
+      // to resemble the old frontend's ~25-image load batches while leaving the
+      // actual disk/decode scheduling to Chromium/WebView.
       maxConcurrent: 32,
       maxBackgroundConcurrent: 32,
     },
@@ -102,17 +102,13 @@ export function createViewerRuntime(
       // In browser-native mode maxThumbnailEdge is only a scheduling/cache key;
       // the source file itself is delivered unchanged to the WebView.
       maxThumbnailEdge: 768,
-      // Flow intentionally spends memory for continuity. Keeping roughly four
-      // viewport heights of mounted context on each side lets already decoded
-      // images survive ordinary wheel browsing and moderate scrollbar drags,
-      // which is much closer to the old frontend's retained Image wrappers.
-      renderWindowScreens: 4,
-      // Interest extends beyond the mounted window so work is not immediately
-      // cancelled at its edge and direction changes can reuse warm state.
-      prefetchWindowScreens: 6,
-      // Browser-native leases are cheap resource-key state; keep a generous LRU
-      // so revisiting recently browsed regions does not churn URI state.
-      warmThumbnailCount: 2048,
+      // Keep the active loading frontier compact. Historical decoded media is
+      // retained separately by the presentation layer; expanding this query
+      // window caused every viewport refresh to diff/decode too much work.
+      renderWindowScreens: 1.5,
+      prefetchWindowScreens: 2.5,
+      // Resource-key state is cheap, but this no longer drives DOM residency.
+      warmThumbnailCount: 768,
     },
   );
   const canvasScene = new CanvasSceneModel({
