@@ -16,10 +16,13 @@ import {
   FLOW_REVEAL_SCAN_STEP_MS,
   selectFlowRevealBatch,
 } from "../flowRevealPolicy";
+import { FlowRetainedTileCache } from "../flowRetainedTileCache";
 import {
   FLOW_SCRUB_SETTLE_MS,
+  FLOW_VIEWPORT_SETTLE_SYNC_MS,
   FLOW_WHEEL_ACTIVITY_GRACE_MS,
   shouldEnterFlowScrub,
+  shouldSyncFlowViewport,
 } from "../flowScrollPolicy";
 import { useMediaSelection } from "../selectionContext";
 
@@ -35,40 +38,43 @@ const viewportElement = ref<HTMLElement | null>(null);
 const snapshot = shallowRef(props.browser.snapshot);
 const selectionSnapshot = shallowRef(selection.snapshot);
 const isScrubbing = ref(false);
-const scrollDirection = ref<-1 | 0 | 1>(0);
-const liveScrollTop = ref(0);
-const liveViewportHeight = ref(0);
 const revealRevision = ref(0);
+const retainedRevision = ref(0);
 
 let unsubscribe: (() => void) | null = null;
 let unsubscribeSelection: (() => void) | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let viewportFrame: number | null = null;
+let viewportSettleTimer: number | null = null;
 let scrubSettleTimer: number | null = null;
 let revealTimer: number | null = null;
 let lastScrollTop: number | null = null;
 let lastScrollAt = 0;
+let lastSyncedScrollTop = 0;
 let lastWheelAt = Number.NEGATIVE_INFINITY;
 let revealSessionId: string | null = null;
+let scrollDirection: -1 | 0 | 1 = 0;
+let liveScrollTop = 0;
+let liveViewportHeight = 1;
 
 const revealedMediaIds = new Set<string>();
 const pendingRevealMediaIds = new Set<string>();
+const retainedTiles = new FlowRetainedTileCache(800);
 
 const FLOW_MAX_REPRESENTATION_DPR = 1.5;
-const FLOW_BIDIRECTIONAL_EAGER_SCREENS = 1.5;
-const FLOW_DIRECTIONAL_EAGER_SCREENS = 3.5;
 
 const canvasStyle = computed(() => ({
   height: `${Math.max(1, snapshot.value.totalHeight)}px`,
 }));
 const selectedIds = computed(() => new Set(selectionSnapshot.value.selectedIds));
+const currentTileIds = computed(
+  () => new Set(snapshot.value.tiles.map((tile) => tile.mediaId)),
+);
 const orderedTiles = computed(() => {
-  const visible = snapshot.value.tiles.filter((tile) => tile.priority === "visible");
-  const overscan = snapshot.value.tiles.filter((tile) => tile.priority !== "visible");
-  return [
-    ...sortTilesForDirection(visible, scrollDirection.value),
-    ...sortTilesForDirection(overscan, scrollDirection.value),
-  ];
+  void retainedRevision.value;
+  const current = sortTilesForDirection(snapshot.value.tiles, scrollDirection);
+  const historical = retainedTiles.historicalExcluding(currentTileIds.value);
+  return [...current, ...historical];
 });
 const columnOptions = ["auto", 1, 2, 3, 4, 5, 6, 7, 8] as const;
 const rowHeightOptions = [120, 160, 220, 300, 400] as const;
@@ -91,37 +97,16 @@ function compareTilesTopToBottom(left: BrowserTile, right: BrowserTile): number 
 }
 
 function shouldEagerLoad(tile: BrowserTile): boolean {
-  if (tile.priority === "visible") {
-    return true;
-  }
-
-  const viewportHeight = Math.max(1, liveViewportHeight.value);
-  const top = liveScrollTop.value;
-  const bottom = top + viewportHeight;
-  const tileTop = tile.y;
-  const tileBottom = tile.y + tile.height;
-  const nearDistance = viewportHeight * FLOW_BIDIRECTIONAL_EAGER_SCREENS;
-  const directionalDistance = viewportHeight * FLOW_DIRECTIONAL_EAGER_SCREENS;
-
-  if (tileBottom >= top - nearDistance && tileTop <= bottom + nearDistance) {
-    return true;
-  }
-  if (scrollDirection.value > 0) {
-    return tileTop <= bottom + directionalDistance && tileBottom >= bottom;
-  }
-  if (scrollDirection.value < 0) {
-    return tileBottom >= top - directionalDistance && tileTop <= top;
-  }
-  return false;
+  // Every tile in the compact controller window belongs to the next useful
+  // frontier, just like the old frontend's fixed-size load batch. Historical
+  // retained tiles are already decoded, so this flag does not create new work.
+  return currentTileIds.value.has(tile.mediaId);
 }
 
 function shouldMountImage(tile: BrowserTile): boolean {
   if (tile.thumbnailStatus !== "ready" || !tile.thumbnailUri) {
     return false;
   }
-  // During a deep scrub do not start new cold image work, but never tear down a
-  // decoded/revealed image merely because the gesture crossed the scrub
-  // threshold. This preserves the feeling of moving over one retained canvas.
   return !isScrubbing.value || isTileRevealed(tile.mediaId);
 }
 
@@ -130,22 +115,10 @@ function isTileRevealed(mediaId: string): boolean {
   return revealedMediaIds.has(mediaId);
 }
 
-async function handleImageLoad(tile: BrowserTile, event: Event): Promise<void> {
+function handleImageLoad(tile: BrowserTile): void {
   if (revealedMediaIds.has(tile.mediaId)) {
-    return;
-  }
-
-  const target = event.currentTarget;
-  if (target instanceof HTMLImageElement && typeof target.decode === "function") {
-    try {
-      await target.decode();
-    } catch {
-      // `load` already proved that the resource is usable. Some engines reject
-      // decode() during lifecycle races; revealing after load is still safe.
-    }
-  }
-
-  if (!orderedTiles.value.some((current) => current.mediaId === tile.mediaId)) {
+    retainedTiles.retain(tile);
+    retainedRevision.value += 1;
     return;
   }
   pendingRevealMediaIds.add(tile.mediaId);
@@ -178,19 +151,24 @@ function flushRevealCohort(): void {
   const batch = selectFlowRevealBatch(
     currentTiles,
     pendingRevealMediaIds,
-    scrollDirection.value,
-    Math.max(1, liveViewportHeight.value),
+    scrollDirection,
+    Math.max(1, liveViewportHeight),
   );
-
   if (batch.length === 0) {
     return;
   }
 
+  const tilesById = new Map(currentTiles.map((tile) => [tile.mediaId, tile]));
   for (const mediaId of batch) {
     pendingRevealMediaIds.delete(mediaId);
     revealedMediaIds.add(mediaId);
+    const tile = tilesById.get(mediaId);
+    if (tile !== undefined) {
+      retainedTiles.retain(tile);
+    }
   }
   revealRevision.value += 1;
+  retainedRevision.value += 1;
 
   if (pendingRevealMediaIds.size > 0) {
     scheduleRevealCohort(FLOW_REVEAL_SCAN_STEP_MS);
@@ -204,11 +182,18 @@ function resetRevealState(sessionId: string | null): void {
   revealSessionId = sessionId;
   revealedMediaIds.clear();
   pendingRevealMediaIds.clear();
+  retainedTiles.resetForSession(sessionId);
   revealRevision.value += 1;
+  retainedRevision.value += 1;
   if (revealTimer !== null) {
     window.clearTimeout(revealTimer);
     revealTimer = null;
   }
+}
+
+function clearRetainedLayout(): void {
+  retainedTiles.clear();
+  retainedRevision.value += 1;
 }
 
 function tileStyle(tile: BrowserTile): Record<string, string> {
@@ -232,6 +217,7 @@ function handleColumnCountChange(event: Event): void {
   if (!(target instanceof HTMLSelectElement)) {
     return;
   }
+  clearRetainedLayout();
   props.browser.setColumnCount(
     target.value === "auto" ? "auto" : Number(target.value),
   );
@@ -242,6 +228,7 @@ function handleRowHeightChange(event: Event): void {
   if (!(target instanceof HTMLSelectElement)) {
     return;
   }
+  clearRetainedLayout();
   props.browser.setJustifiedTargetRowHeight(Number(target.value));
 }
 
@@ -258,37 +245,51 @@ function handleWheel(): void {
 
 function handleScroll(): void {
   const element = viewportElement.value;
-  if (element !== null && element.clientHeight > 0) {
-    const now = performance.now();
-    liveScrollTop.value = element.scrollTop;
-    liveViewportHeight.value = element.clientHeight;
-    if (lastScrollTop !== null) {
-      const delta = element.scrollTop - lastScrollTop;
-      if (delta !== 0) {
-        scrollDirection.value = delta > 0 ? 1 : -1;
-      }
-      const elapsedMs = Math.max(1, now - lastScrollAt);
-      if (
-        shouldEnterFlowScrub({
-          previousScrollTop: lastScrollTop,
-          scrollTop: element.scrollTop,
-          viewportHeight: element.clientHeight,
-          elapsedMs,
-          recentWheel: now - lastWheelAt <= FLOW_WHEEL_ACTIVITY_GRACE_MS,
-        })
-      ) {
-        isScrubbing.value = true;
-      }
-    }
-    lastScrollTop = element.scrollTop;
-    lastScrollAt = now;
+  if (element === null || element.clientHeight <= 0) {
+    return;
+  }
 
-    if (isScrubbing.value) {
-      scheduleScrubSettle();
+  const now = performance.now();
+  liveScrollTop = element.scrollTop;
+  liveViewportHeight = element.clientHeight;
+
+  if (lastScrollTop !== null) {
+    const delta = element.scrollTop - lastScrollTop;
+    if (delta !== 0) {
+      scrollDirection = delta > 0 ? 1 : -1;
+    }
+    const elapsedMs = Math.max(1, now - lastScrollAt);
+    if (
+      shouldEnterFlowScrub({
+        previousScrollTop: lastScrollTop,
+        scrollTop: element.scrollTop,
+        viewportHeight: element.clientHeight,
+        elapsedMs,
+        recentWheel: now - lastWheelAt <= FLOW_WHEEL_ACTIVITY_GRACE_MS,
+      })
+    ) {
+      isScrubbing.value = true;
     }
   }
 
-  scheduleViewportSync();
+  lastScrollTop = element.scrollTop;
+  lastScrollAt = now;
+
+  if (isScrubbing.value) {
+    scheduleScrubSettle();
+    return;
+  }
+
+  if (
+    shouldSyncFlowViewport({
+      syncedScrollTop: lastSyncedScrollTop,
+      scrollTop: element.scrollTop,
+      viewportHeight: element.clientHeight,
+    })
+  ) {
+    scheduleViewportSync();
+  }
+  scheduleViewportSettleSync();
 }
 
 function scheduleScrubSettle(): void {
@@ -298,8 +299,18 @@ function scheduleScrubSettle(): void {
   scrubSettleTimer = window.setTimeout(() => {
     scrubSettleTimer = null;
     isScrubbing.value = false;
-    scheduleViewportSync();
+    syncViewport();
   }, FLOW_SCRUB_SETTLE_MS);
+}
+
+function scheduleViewportSettleSync(): void {
+  if (viewportSettleTimer !== null) {
+    window.clearTimeout(viewportSettleTimer);
+  }
+  viewportSettleTimer = window.setTimeout(() => {
+    viewportSettleTimer = null;
+    syncViewport();
+  }, FLOW_VIEWPORT_SETTLE_SYNC_MS);
 }
 
 function scheduleViewportSync(): void {
@@ -318,8 +329,9 @@ function syncViewport(): void {
     return;
   }
 
-  liveScrollTop.value = element.scrollTop;
-  liveViewportHeight.value = element.clientHeight;
+  liveScrollTop = element.scrollTop;
+  liveViewportHeight = element.clientHeight;
+  lastSyncedScrollTop = element.scrollTop;
   props.browser.setViewport({
     width: element.clientWidth,
     height: element.clientHeight,
@@ -334,6 +346,8 @@ function syncViewport(): void {
 onMounted(() => {
   unsubscribe = props.browser.subscribe((nextSnapshot) => {
     resetRevealState(nextSnapshot.sessionId);
+    retainedTiles.updateCurrent(nextSnapshot.tiles);
+    retainedRevision.value += 1;
     snapshot.value = nextSnapshot;
   });
   unsubscribeSelection = selection.subscribe((nextSnapshot) => {
@@ -342,12 +356,16 @@ onMounted(() => {
 
   const element = viewportElement.value;
   if (element !== null) {
-    resizeObserver = new ResizeObserver(scheduleViewportSync);
+    resizeObserver = new ResizeObserver(() => {
+      clearRetainedLayout();
+      scheduleViewportSync();
+    });
     resizeObserver.observe(element);
     lastScrollTop = element.scrollTop;
+    lastSyncedScrollTop = element.scrollTop;
     lastScrollAt = performance.now();
-    liveScrollTop.value = element.scrollTop;
-    liveViewportHeight.value = element.clientHeight;
+    liveScrollTop = element.scrollTop;
+    liveViewportHeight = Math.max(1, element.clientHeight);
   }
   scheduleViewportSync();
 });
@@ -358,6 +376,9 @@ onBeforeUnmount(() => {
   resizeObserver?.disconnect();
   if (viewportFrame !== null) {
     window.cancelAnimationFrame(viewportFrame);
+  }
+  if (viewportSettleTimer !== null) {
+    window.clearTimeout(viewportSettleTimer);
   }
   if (scrubSettleTimer !== null) {
     window.clearTimeout(scrubSettleTimer);
@@ -429,9 +450,9 @@ onBeforeUnmount(() => {
           :alt="tile.name"
           decoding="async"
           :loading="shouldEagerLoad(tile) ? 'eager' : 'lazy'"
-          :fetchpriority="tile.priority === 'visible' ? 'high' : 'low'"
+          :fetchpriority="tile.priority === 'visible' ? 'high' : 'auto'"
           draggable="false"
-          @load="handleImageLoad(tile, $event)"
+          @load="handleImageLoad(tile)"
         />
         <div v-else class="flow-placeholder">
           <span v-if="tile.thumbnailStatus === 'error'" class="placeholder-label">
