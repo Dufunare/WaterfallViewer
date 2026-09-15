@@ -1,5 +1,6 @@
 mod ipc;
 mod local_source;
+mod media_http;
 mod media_resource;
 mod thumbnail_cache;
 mod thumbnail_request;
@@ -10,6 +11,7 @@ use ipc::{
     release_representation, request_thumbnail, start_scan, ScanRegistry,
 };
 use local_source::LocalSourceRegistry;
+use media_http::{get_media_http_origin, MediaHttpServer};
 use media_resource::{respond_to_media_request, MediaResourceRegistry, MEDIA_PROTOCOL};
 use tauri::Manager;
 use thumbnail_cache::ThumbnailCacheManager;
@@ -20,6 +22,8 @@ use waterfall_infra::SqliteVisualMetadataCache;
 pub fn run() {
     let resources = MediaResourceRegistry::default();
     let protocol_resources = resources.clone();
+    let media_http = MediaHttpServer::start(resources.clone())
+        .expect("failed to start loopback media streaming server");
 
     tauri::Builder::default()
         .setup(|app| {
@@ -48,8 +52,11 @@ pub fn run() {
         })
         .manage(LocalSourceRegistry::default())
         .manage(resources)
+        .manage(media_http)
         .manage(ThumbnailCacheManager::default())
         .manage(ThumbnailRequestRegistry::default())
+        // Keep the existing custom protocol for Canvas/preview compatibility.
+        // The experimental Flow path uses the loopback HTTP server instead.
         .register_asynchronous_uri_scheme_protocol(
             MEDIA_PROTOCOL,
             move |_context, request, responder| {
@@ -71,7 +78,8 @@ pub fn run() {
             cancel_thumbnail_request,
             release_representation,
             get_media_detail,
-            pick_source_directory
+            pick_source_directory,
+            get_media_http_origin
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
