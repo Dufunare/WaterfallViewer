@@ -239,7 +239,11 @@ fn make_session_token(address: SocketAddr) -> String {
     hasher.update(now.to_le_bytes());
     hasher.update(address.to_string().as_bytes());
     let digest = hasher.finalize();
-    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+    digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 #[cfg(test)]
