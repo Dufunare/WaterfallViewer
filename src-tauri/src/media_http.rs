@@ -5,7 +5,7 @@ use std::{
     path::Path,
     sync::Arc,
     thread,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use sha2::{Digest, Sha256};
@@ -14,6 +14,7 @@ use tauri::State;
 use crate::media_resource::MediaResourceRegistry;
 
 const MEDIA_HTTP_SHARDS: usize = 4;
+const MEDIA_HTTP_IDLE_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Clone)]
 pub struct MediaHttpServer {
@@ -78,54 +79,113 @@ fn serve_connection(
     token: &str,
 ) -> io::Result<()> {
     stream.set_nodelay(true)?;
+    stream.set_read_timeout(Some(MEDIA_HTTP_IDLE_TIMEOUT))?;
     let mut reader = BufReader::new(stream);
+
+    loop {
+        match serve_request(&mut reader, &registry, token) {
+            Ok(true) => continue,
+            Ok(false) => return Ok(()),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                return Ok(())
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn serve_request(
+    reader: &mut BufReader<TcpStream>,
+    registry: &MediaResourceRegistry,
+    token: &str,
+) -> io::Result<bool> {
     let mut request_line = String::new();
     if reader.read_line(&mut request_line)? == 0 {
-        return Ok(());
+        return Ok(false);
+    }
+    if request_line == "\r\n" || request_line == "\n" {
+        return Ok(true);
     }
 
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or_default();
     let target = parts.next().unwrap_or_default();
-    let _version = parts.next().unwrap_or_default();
+    let version = parts.next().unwrap_or_default();
 
     let mut range_header: Option<String> = None;
+    let mut connection_close = false;
+    let mut connection_keep_alive = false;
     loop {
         let mut line = String::new();
         if reader.read_line(&mut line)? == 0 || line == "\r\n" || line == "\n" {
             break;
         }
         if let Some((name, value)) = line.split_once(':') {
-            if name.trim().eq_ignore_ascii_case("range") {
-                range_header = Some(value.trim().to_owned());
+            let name = name.trim();
+            let value = value.trim();
+            if name.eq_ignore_ascii_case("range") {
+                range_header = Some(value.to_owned());
+            } else if name.eq_ignore_ascii_case("connection") {
+                for directive in value.split(',').map(str::trim) {
+                    if directive.eq_ignore_ascii_case("close") {
+                        connection_close = true;
+                    } else if directive.eq_ignore_ascii_case("keep-alive") {
+                        connection_keep_alive = true;
+                    }
+                }
             }
         }
     }
 
-    let mut stream = reader.into_inner();
+    let keep_alive = match version {
+        "HTTP/1.1" => !connection_close,
+        "HTTP/1.0" => connection_keep_alive && !connection_close,
+        _ => false,
+    };
+    let connection_header = if keep_alive { "keep-alive" } else { "close" };
+    let stream = reader.get_mut();
+
     if method != "GET" && method != "HEAD" {
-        return write_empty_response(&mut stream, 405, "Method Not Allowed");
+        write_empty_response(
+            stream,
+            405,
+            "Method Not Allowed",
+            connection_header,
+        )?;
+        return Ok(keep_alive);
     }
 
     let path_only = target.split('?').next().unwrap_or(target);
     let expected_prefix = format!("/{token}/");
     let Some(resource_key) = path_only.strip_prefix(&expected_prefix) else {
-        return write_empty_response(&mut stream, 404, "Not Found");
+        write_empty_response(stream, 404, "Not Found", connection_header)?;
+        return Ok(keep_alive);
     };
     if !is_opaque_resource_key(resource_key) {
-        return write_empty_response(&mut stream, 404, "Not Found");
+        write_empty_response(stream, 404, "Not Found", connection_header)?;
+        return Ok(keep_alive);
     }
 
     let Some(path) = registry.resolve(resource_key) else {
-        return write_empty_response(&mut stream, 404, "Not Found");
+        write_empty_response(stream, 404, "Not Found", connection_header)?;
+        return Ok(keep_alive);
     };
 
     let mut file = match File::open(&path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return write_empty_response(&mut stream, 404, "Not Found")
+            write_empty_response(stream, 404, "Not Found", connection_header)?;
+            return Ok(keep_alive);
         }
-        Err(_) => return write_empty_response(&mut stream, 500, "Internal Server Error"),
+        Err(_) => {
+            write_empty_response(stream, 500, "Internal Server Error", connection_header)?;
+            return Ok(keep_alive);
+        }
     };
     let total = file.metadata()?.len();
     let range = match parse_range(range_header.as_deref(), total) {
@@ -133,9 +193,10 @@ fn serve_connection(
         Err(()) => {
             write!(
                 stream,
-                "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{total}\r\nContent-Length: 0\r\nAccept-Ranges: bytes\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n"
+                "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{total}\r\nContent-Length: 0\r\nAccept-Ranges: bytes\r\nAccess-Control-Allow-Origin: *\r\nConnection: {connection_header}\r\n\r\n"
             )?;
-            return stream.flush();
+            stream.flush()?;
+            return Ok(keep_alive);
         }
     };
 
@@ -145,32 +206,38 @@ fn serve_connection(
         None => {
             write!(
                 stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {total}\r\nAccept-Ranges: bytes\r\nCache-Control: private, max-age=31536000, immutable\r\nAccess-Control-Allow-Origin: *\r\nCross-Origin-Resource-Policy: cross-origin\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n"
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {total}\r\nAccept-Ranges: bytes\r\nCache-Control: private, max-age=31536000, immutable\r\nAccess-Control-Allow-Origin: *\r\nCross-Origin-Resource-Policy: cross-origin\r\nX-Content-Type-Options: nosniff\r\nConnection: {connection_header}\r\n\r\n"
             )?;
             if !head_only {
-                io::copy(&mut file, &mut stream)?;
+                io::copy(&mut file, stream)?;
             }
         }
         Some((start, end)) => {
             let length = end - start + 1;
             write!(
                 stream,
-                "HTTP/1.1 206 Partial Content\r\nContent-Type: {content_type}\r\nContent-Length: {length}\r\nContent-Range: bytes {start}-{end}/{total}\r\nAccept-Ranges: bytes\r\nCache-Control: private, max-age=31536000, immutable\r\nAccess-Control-Allow-Origin: *\r\nCross-Origin-Resource-Policy: cross-origin\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n"
+                "HTTP/1.1 206 Partial Content\r\nContent-Type: {content_type}\r\nContent-Length: {length}\r\nContent-Range: bytes {start}-{end}/{total}\r\nAccept-Ranges: bytes\r\nCache-Control: private, max-age=31536000, immutable\r\nAccess-Control-Allow-Origin: *\r\nCross-Origin-Resource-Policy: cross-origin\r\nX-Content-Type-Options: nosniff\r\nConnection: {connection_header}\r\n\r\n"
             )?;
             if !head_only {
                 file.seek(SeekFrom::Start(start))?;
                 let mut limited = file.take(length);
-                io::copy(&mut limited, &mut stream)?;
+                io::copy(&mut limited, stream)?;
             }
         }
     }
-    stream.flush()
+    stream.flush()?;
+    Ok(keep_alive)
 }
 
-fn write_empty_response(stream: &mut TcpStream, status: u16, reason: &str) -> io::Result<()> {
+fn write_empty_response(
+    stream: &mut TcpStream,
+    status: u16,
+    reason: &str,
+    connection_header: &str,
+) -> io::Result<()> {
     write!(
         stream,
-        "HTTP/1.1 {status} {reason}\r\nContent-Length: 0\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n"
+        "HTTP/1.1 {status} {reason}\r\nContent-Length: 0\r\nAccess-Control-Allow-Origin: *\r\nConnection: {connection_header}\r\n\r\n"
     )?;
     stream.flush()
 }
