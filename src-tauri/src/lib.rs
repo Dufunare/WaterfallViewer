@@ -13,10 +13,8 @@ use ipc::{
 use local_source::LocalSourceRegistry;
 use media_http::{get_media_http_origin, MediaHttpServer};
 use media_resource::{respond_to_media_request, MediaResourceRegistry, MEDIA_PROTOCOL};
-use tauri::Manager;
 use thumbnail_cache::ThumbnailCacheManager;
 use thumbnail_request::ThumbnailRequestRegistry;
-use waterfall_infra::SqliteVisualMetadataCache;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -26,30 +24,7 @@ pub fn run() {
         .expect("failed to start loopback media streaming server");
 
     tauri::Builder::default()
-        .setup(|app| {
-            let registry = match app.path().app_cache_dir() {
-                Ok(cache_dir) => {
-                    let database_path = cache_dir.join("visual-metadata-cache.sqlite3");
-                    match SqliteVisualMetadataCache::open(database_path) {
-                        Ok(cache) => ScanRegistry::with_visual_metadata_cache(cache),
-                        Err(error) => {
-                            eprintln!(
-                                "failed to initialize persistent visual metadata cache; using memory cache: {error}"
-                            );
-                            ScanRegistry::default()
-                        }
-                    }
-                }
-                Err(error) => {
-                    eprintln!(
-                        "failed to resolve application cache directory; using memory cache: {error}"
-                    );
-                    ScanRegistry::default()
-                }
-            };
-            app.manage(registry);
-            Ok(())
-        })
+        .manage(ScanRegistry::default())
         .manage(LocalSourceRegistry::default())
         .manage(resources)
         .manage(media_http)
