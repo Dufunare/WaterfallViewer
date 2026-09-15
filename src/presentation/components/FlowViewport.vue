@@ -37,6 +37,7 @@ const snapshot = shallowRef(props.browser.snapshot);
 let unsubscribeBrowser: (() => void) | null = null;
 let unsubscribeSelection: (() => void) | null = null;
 let displayObserver: MutationObserver | null = null;
+let columnResizeObserver: ResizeObserver | null = null;
 let activeSessionId: string | null = null;
 let layoutEpoch = 0;
 let loading = 0;
@@ -69,6 +70,7 @@ const SCROLL_ACTIVE_WINDOW_MS = 90;
 const APPENDS_PER_SCROLL_FRAME = 2;
 const APPENDS_PER_IDLE_FRAME = 10;
 const ROOT_SCROLL_CLASS = "wf-flow-root-scroll";
+const HEIGHT_RECONCILE_EPSILON = 0.5;
 
 function handleBrowserEvent(event: LegacyFlowBrowserEvent): void {
   snapshot.value = event.snapshot;
@@ -173,6 +175,8 @@ function buildLayoutShell(): void {
     return;
   }
 
+  columnResizeObserver?.disconnect();
+  columnResizeObserver = null;
   imgbox.replaceChildren();
   columnElements = [];
   columnHeights = [];
@@ -188,10 +192,54 @@ function buildLayoutShell(): void {
       columnHeights.push(0);
     }
     updateMasonryColumnWidth();
+    observeMasonryColumns();
   } else {
     imgbox.className = "legacy-imgbox justified";
   }
   updateFlowContentTop();
+}
+
+function observeMasonryColumns(): void {
+  columnResizeObserver?.disconnect();
+  if (columnElements.length === 0) {
+    columnResizeObserver = null;
+    return;
+  }
+
+  columnResizeObserver = new ResizeObserver((entries) => {
+    if (destroyed || snapshot.value.layoutMode !== "masonry") {
+      return;
+    }
+
+    let changed = false;
+    for (const entry of entries) {
+      const index = columnElements.indexOf(entry.target as HTMLElement);
+      if (index < 0) {
+        continue;
+      }
+      const actualHeight = entry.contentRect.height;
+      if (!Number.isFinite(actualHeight)) {
+        continue;
+      }
+      if (
+        Math.abs((columnHeights[index] ?? 0) - actualHeight) <=
+        HEIGHT_RECONCILE_EPSILON
+      ) {
+        continue;
+      }
+      columnHeights[index] = actualHeight;
+      changed = true;
+    }
+
+    if (changed) {
+      updateMasonryFrontier();
+      loadNext();
+    }
+  });
+
+  for (const column of columnElements) {
+    columnResizeObserver.observe(column);
+  }
 }
 
 function updateFlowContentTop(): void {
@@ -239,9 +287,10 @@ function rebuildMasonryHeightModel(): void {
 }
 
 function estimatedMasonryImageHeight(img: HTMLImageElement): number {
-  const width = Math.max(1, img.naturalWidth);
-  const height = Math.max(1, img.naturalHeight);
-  return masonryColumnWidth * (height / width);
+  if (img.naturalWidth <= 0 || img.naturalHeight <= 0) {
+    return 0;
+  }
+  return masonryColumnWidth * (img.naturalHeight / img.naturalWidth);
 }
 
 function shortestColumnIndex(): number {
@@ -686,6 +735,7 @@ onBeforeUnmount(() => {
   unsubscribeBrowser?.();
   unsubscribeSelection?.();
   displayObserver?.disconnect();
+  columnResizeObserver?.disconnect();
   document.removeEventListener("scroll", handleDocumentScroll);
   window.removeEventListener("resize", handleWindowResize);
   cancelScheduledLoad();
