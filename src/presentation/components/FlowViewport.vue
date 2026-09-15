@@ -55,6 +55,8 @@ const revealedMediaIds = new Set<string>();
 const pendingRevealMediaIds = new Set<string>();
 
 const FLOW_MAX_REPRESENTATION_DPR = 1.5;
+const FLOW_BIDIRECTIONAL_EAGER_SCREENS = 1.5;
+const FLOW_DIRECTIONAL_EAGER_SCREENS = 3.5;
 
 const canvasStyle = computed(() => ({
   height: `${Math.max(1, snapshot.value.totalHeight)}px`,
@@ -62,10 +64,6 @@ const canvasStyle = computed(() => ({
 const selectedIds = computed(() => new Set(selectionSnapshot.value.selectedIds));
 const orderedTiles = computed(() => {
   const visible = snapshot.value.tiles.filter((tile) => tile.priority === "visible");
-  if (isScrubbing.value) {
-    return sortTilesForDirection(visible, scrollDirection.value);
-  }
-
   const overscan = snapshot.value.tiles.filter((tile) => tile.priority !== "visible");
   return [
     ...sortTilesForDirection(visible, scrollDirection.value),
@@ -97,15 +95,34 @@ function shouldEagerLoad(tile: BrowserTile): boolean {
     return true;
   }
 
+  const viewportHeight = Math.max(1, liveViewportHeight.value);
   const top = liveScrollTop.value;
-  const bottom = top + liveViewportHeight.value;
+  const bottom = top + viewportHeight;
+  const tileTop = tile.y;
+  const tileBottom = tile.y + tile.height;
+  const nearDistance = viewportHeight * FLOW_BIDIRECTIONAL_EAGER_SCREENS;
+  const directionalDistance = viewportHeight * FLOW_DIRECTIONAL_EAGER_SCREENS;
+
+  if (tileBottom >= top - nearDistance && tileTop <= bottom + nearDistance) {
+    return true;
+  }
   if (scrollDirection.value > 0) {
-    return tile.y + tile.height >= bottom;
+    return tileTop <= bottom + directionalDistance && tileBottom >= bottom;
   }
   if (scrollDirection.value < 0) {
-    return tile.y <= top;
+    return tileBottom >= top - directionalDistance && tileTop <= top;
   }
   return false;
+}
+
+function shouldMountImage(tile: BrowserTile): boolean {
+  if (tile.thumbnailStatus !== "ready" || !tile.thumbnailUri) {
+    return false;
+  }
+  // During a deep scrub do not start new cold image work, but never tear down a
+  // decoded/revealed image merely because the gesture crossed the scrub
+  // threshold. This preserves the feeling of moving over one retained canvas.
+  return !isScrubbing.value || isTileRevealed(tile.mediaId);
 }
 
 function isTileRevealed(mediaId: string): boolean {
@@ -113,8 +130,22 @@ function isTileRevealed(mediaId: string): boolean {
   return revealedMediaIds.has(mediaId);
 }
 
-function handleImageLoad(tile: BrowserTile): void {
+async function handleImageLoad(tile: BrowserTile, event: Event): Promise<void> {
   if (revealedMediaIds.has(tile.mediaId)) {
+    return;
+  }
+
+  const target = event.currentTarget;
+  if (target instanceof HTMLImageElement && typeof target.decode === "function") {
+    try {
+      await target.decode();
+    } catch {
+      // `load` already proved that the resource is usable. Some engines reject
+      // decode() during lifecycle races; revealing after load is still safe.
+    }
+  }
+
+  if (!orderedTiles.value.some((current) => current.mediaId === tile.mediaId)) {
     return;
   }
   pendingRevealMediaIds.add(tile.mediaId);
@@ -391,20 +422,16 @@ onBeforeUnmount(() => {
         @dblclick="emit('activate', tile.mediaId)"
       >
         <img
-          v-if="
-            !isScrubbing &&
-            tile.thumbnailStatus === 'ready' &&
-            tile.thumbnailUri
-          "
+          v-if="shouldMountImage(tile)"
           class="flow-image"
           :class="{ revealed: isTileRevealed(tile.mediaId) }"
-          :src="tile.thumbnailUri"
+          :src="tile.thumbnailUri ?? undefined"
           :alt="tile.name"
           decoding="async"
           :loading="shouldEagerLoad(tile) ? 'eager' : 'lazy'"
           :fetchpriority="tile.priority === 'visible' ? 'high' : 'low'"
           draggable="false"
-          @load="handleImageLoad(tile)"
+          @load="handleImageLoad(tile, $event)"
         />
         <div v-else class="flow-placeholder">
           <span v-if="tile.thumbnailStatus === 'error'" class="placeholder-label">
