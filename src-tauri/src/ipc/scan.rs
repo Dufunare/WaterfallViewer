@@ -9,39 +9,20 @@ use std::{
 use serde::{Deserialize, Serialize};
 use tauri::{ipc::Channel, State};
 use waterfall_core::{
-    CancellationProbe, MediaItem, MediaKind, MediaScanner, MediaSource, ScanEvent, ScanEventSink,
-    ScanFailure, ScanFailureKind, ScanRequest, ScanSummary, ScanWarning, SourceId, VisualMetadata,
+    CancellationProbe, MediaItem, MediaKind, MediaScanner, MediaSource, MetadataReadFailure,
+    ScanEvent, ScanEventSink, ScanFailure, ScanFailureKind, ScanRequest, ScanSummary, ScanWarning,
+    SourceId, VisualMetadata, VisualMetadataReader,
 };
-use waterfall_infra::{
-    CachingVisualMetadataReader, HeaderVisualMetadataReader, InMemoryVisualMetadataCache,
-    LocalFilesystemScanner, VisualMetadataCache,
-};
+use waterfall_infra::LocalFilesystemScanner;
 
 use crate::{local_source::LocalSourceRegistry, media_resource::MediaResourceRegistry};
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct ScanRegistry {
     sessions: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
-    visual_metadata_cache: Arc<dyn VisualMetadataCache>,
-}
-
-impl Default for ScanRegistry {
-    fn default() -> Self {
-        Self::with_visual_metadata_cache(InMemoryVisualMetadataCache::new())
-    }
 }
 
 impl ScanRegistry {
-    pub fn with_visual_metadata_cache<C>(cache: C) -> Self
-    where
-        C: VisualMetadataCache + 'static,
-    {
-        Self {
-            sessions: Arc::new(Mutex::new(HashMap::new())),
-            visual_metadata_cache: Arc::new(cache),
-        }
-    }
-
     fn register(&self, session_id: &str) -> Result<CancellationToken, ScanCommandError> {
         if session_id.trim().is_empty() {
             return Err(ScanCommandError::invalid_request(
@@ -80,6 +61,19 @@ impl ScanRegistry {
         if let Ok(mut sessions) = self.sessions.lock() {
             sessions.remove(session_id);
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct NoVisualMetadataReader;
+
+impl VisualMetadataReader for NoVisualMetadataReader {
+    fn read_visual_metadata(
+        &self,
+        _locator: &str,
+        _kind: &MediaKind,
+    ) -> Result<Option<VisualMetadata>, MetadataReadFailure> {
+        Ok(None)
     }
 }
 
@@ -277,7 +271,6 @@ pub async fn start_scan(
 
     let registry = registry.inner().clone();
     let resources = resources.inner().clone();
-    let metadata_cache = registry.visual_metadata_cache.clone();
     let session_id = request.session_id.clone();
     let cancellation = registry.register(&session_id)?;
     let scan_request = ScanRequest::new(
@@ -300,9 +293,7 @@ pub async fn start_scan(
 
     let scan_resources = resources.clone();
     let task = tauri::async_runtime::spawn_blocking(move || {
-        let metadata_reader =
-            CachingVisualMetadataReader::new(HeaderVisualMetadataReader::new(), metadata_cache);
-        let scanner = LocalFilesystemScanner::with_metadata_reader(metadata_reader);
+        let scanner = LocalFilesystemScanner::with_metadata_reader(NoVisualMetadataReader);
         let mut sink = ChannelScanSink::new(on_event, scan_resources);
         scanner.scan(&scan_request, &mut sink, &cancellation)
     });
@@ -434,13 +425,13 @@ mod tests {
     }
 
     #[test]
-    fn cloned_registry_shares_visual_metadata_cache() {
-        let registry = ScanRegistry::default();
-        let clone = registry.clone();
-        assert!(Arc::ptr_eq(
-            &registry.visual_metadata_cache,
-            &clone.visual_metadata_cache
-        ));
+    fn metadata_light_reader_never_opens_image_headers() {
+        assert_eq!(
+            NoVisualMetadataReader
+                .read_visual_metadata("ignored.jpg", &MediaKind::Image)
+                .unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -455,10 +446,7 @@ mod tests {
                 kind: "image".to_owned(),
                 file_size: 42,
                 modified_at_ms: Some(7),
-                visual: Some(VisualMetadataDto {
-                    width: 1920,
-                    height: 1080,
-                }),
+                visual: None,
                 resource_key: "3/8".to_owned(),
             }],
         };
@@ -469,7 +457,7 @@ mod tests {
         assert_eq!(json["data"]["items"][0]["sourceId"], "source-1");
         assert_eq!(json["data"]["items"][0]["relativePath"], "nested/photo.jpg");
         assert_eq!(json["data"]["items"][0]["fileSize"], 42);
-        assert_eq!(json["data"]["items"][0]["visual"]["width"], 1920);
+        assert!(json["data"]["items"][0]["visual"].is_null());
         assert_eq!(json["data"]["items"][0]["resourceKey"], "3/8");
     }
 }

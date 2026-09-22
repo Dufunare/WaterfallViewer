@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { provide } from "vue";
 
-import type { MediaBrowserController } from "./application/browser/mediaBrowserController";
+import type { LegacyFlowBrowserController } from "./application/browser/legacyFlowBrowserController";
 import type { CanvasBrowserController } from "./application/canvas/canvasBrowserController";
 import type { MediaQueryController } from "./application/query/mediaQueryController";
 import type { MediaSelectionController } from "./application/selection/mediaSelectionController";
@@ -16,7 +16,7 @@ const props = defineProps<{
   workspace: ViewerWorkspaceController;
   query: MediaQueryController;
   selection: MediaSelectionController;
-  flowBrowser: MediaBrowserController;
+  flowBrowser: LegacyFlowBrowserController;
   createCanvasBrowser: () => CanvasBrowserController;
   activation: MediaActivationController;
   previewDetails: PreviewMediaDetailController;

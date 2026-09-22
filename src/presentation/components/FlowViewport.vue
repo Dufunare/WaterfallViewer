@@ -1,102 +1,754 @@
 <script setup lang="ts">
-import {
-  computed,
-  onBeforeUnmount,
-  onMounted,
-  ref,
-  shallowRef,
-} from "vue";
+import { onBeforeUnmount, onMounted, ref, shallowRef } from "vue";
 
 import type {
-  BrowserTile,
-  MediaBrowserController,
-} from "../../application/browser/mediaBrowserController";
+  LegacyFlowBrowserController,
+  LegacyFlowBrowserEvent,
+  LegacyFlowItem,
+} from "../../application/browser/legacyFlowBrowserController";
 import { useMediaSelection } from "../selectionContext";
 
 const props = defineProps<{
-  browser: MediaBrowserController;
+  browser: LegacyFlowBrowserController;
 }>();
 const emit = defineEmits<{
   activate: [mediaId: string];
 }>();
 
+interface LegacyItemState {
+  item: LegacyFlowItem;
+  img: HTMLImageElement | null;
+  wrap: HTMLElement | null;
+  status: "idle" | "loading" | "ready";
+  loadEpoch: number;
+}
+
+interface PendingAppend {
+  wrap: HTMLElement;
+  epoch: number;
+  completesLoad: boolean;
+}
+
 const selection = useMediaSelection();
 const viewportElement = ref<HTMLElement | null>(null);
+const imgboxElement = ref<HTMLElement | null>(null);
 const snapshot = shallowRef(props.browser.snapshot);
-const selectionSnapshot = shallowRef(selection.snapshot);
 
-let unsubscribe: (() => void) | null = null;
+let unsubscribeBrowser: (() => void) | null = null;
 let unsubscribeSelection: (() => void) | null = null;
-let resizeObserver: ResizeObserver | null = null;
-let viewportFrame: number | null = null;
+let displayObserver: MutationObserver | null = null;
+let activeSessionId: string | null = null;
+let layoutEpoch = 0;
+let loading = 0;
+let renderedCount = 0;
+let columnElements: HTMLElement[] = [];
+let columnHeights: number[] = [];
+let masonryColumnWidth = 1;
+let masonryFrontierHeight = 0;
+let flowContentTop = 0;
+let queue: LegacyFlowItem[] = [];
+let queueHead = 0;
+let queuedIds = new Set<string>();
+let itemStates = new Map<string, LegacyItemState>();
+let activeBatchRemaining = 0;
+let activeBatchEpoch = 0;
+let pendingAppends: PendingAppend[] = [];
+let pendingAppendIds = new Set<string>();
+let appendFrame: number | null = null;
+let lastScrollAt = Number.NEGATIVE_INFINITY;
+let savedFlowScrollTop = 0;
+let rootScrollEnabled = false;
+let destroyed = false;
+let loadTimer: number | null = null;
 
-const canvasStyle = computed(() => ({
-  height: `${Math.max(1, snapshot.value.totalHeight)}px`,
-}));
-const selectedIds = computed(() => new Set(selectionSnapshot.value.selectedIds));
+const LEGACY_BATCH_SIZE = 25;
+const LEGACY_COLUMN_COUNT = 4;
+const LEGACY_COLUMN_GAP = 10;
+const LEGACY_ROW_GAP = 10;
+const LEGACY_JUSTIFIED_HEIGHT = 220;
+const SCROLL_ACTIVE_WINDOW_MS = 90;
+const APPENDS_PER_SCROLL_FRAME = 2;
+const APPENDS_PER_IDLE_FRAME = 10;
+const ROOT_SCROLL_CLASS = "wf-flow-root-scroll";
 
-function tileStyle(tile: BrowserTile): Record<string, string> {
-  return {
-    width: `${tile.width}px`,
-    height: `${tile.height}px`,
-    transform: `translate3d(${tile.x}px, ${tile.y}px, 0)`,
-  };
-}
+function handleBrowserEvent(event: LegacyFlowBrowserEvent): void {
+  snapshot.value = event.snapshot;
 
-function selectTile(tile: BrowserTile, event: MouseEvent): void {
-  if (event.ctrlKey || event.metaKey) {
-    selection.toggle(tile.mediaId);
+  if (event.type === "state") {
+    if (isTerminalScanState(event.snapshot.scanState?.status)) {
+      finishPendingProducerBatch();
+    }
+    return;
+  }
+
+  if (event.type === "append") {
+    appendNewQueueItems(event.items);
+    loadNext();
+    return;
+  }
+
+  if (event.snapshot.sessionId !== activeSessionId) {
+    hardReset(event.snapshot.sessionId, event.items);
   } else {
-    selection.replace(tile.mediaId);
+    softReflow(event.items);
   }
 }
 
-function scheduleViewportSync(): void {
-  if (viewportFrame !== null) {
-    return;
+function hardReset(
+  sessionId: string | null,
+  items: readonly LegacyFlowItem[],
+): void {
+  cancelScheduledLoad();
+  cancelPendingAppends();
+  layoutEpoch += 1;
+  loading = 0;
+  renderedCount = 0;
+  activeBatchRemaining = 0;
+  activeBatchEpoch = layoutEpoch;
+  activeSessionId = sessionId;
+  queue = [];
+  queueHead = 0;
+  queuedIds.clear();
+
+  for (const state of itemStates.values()) {
+    detachImageCallbacks(state);
   }
-  viewportFrame = window.requestAnimationFrame(() => {
-    viewportFrame = null;
-    syncViewport();
-  });
+  itemStates.clear();
+
+  buildLayoutShell();
+  scrollToStart();
+  appendNewQueueItems(items);
+  loadNext();
 }
 
-function syncViewport(): void {
-  const element = viewportElement.value;
-  if (element === null || element.clientWidth <= 0 || element.clientHeight <= 0) {
+function softReflow(items: readonly LegacyFlowItem[]): void {
+  cancelScheduledLoad();
+  cancelPendingAppends();
+  layoutEpoch += 1;
+  loading = 0;
+  renderedCount = 0;
+  activeBatchRemaining = 0;
+  activeBatchEpoch = layoutEpoch;
+  queue = [];
+  queueHead = 0;
+  queuedIds.clear();
+
+  for (const state of itemStates.values()) {
+    if (state.status === "loading") {
+      detachImageCallbacks(state);
+      state.status = "idle";
+      state.img = null;
+      state.loadEpoch = layoutEpoch;
+    }
+  }
+
+  buildLayoutShell();
+  scrollToStart();
+  for (const item of items) {
+    const existing = itemStates.get(item.mediaId);
+    if (existing !== undefined) {
+      existing.item = item;
+    }
+    queue.push(item);
+    queuedIds.add(item.mediaId);
+  }
+  loadNext();
+}
+
+function queuedItemCount(): number {
+  return queue.length - queueHead;
+}
+
+function shiftQueuedItem(): LegacyFlowItem | undefined {
+  if (queueHead >= queue.length) {
+    return undefined;
+  }
+  const item = queue[queueHead];
+  queueHead += 1;
+
+  if (queueHead >= 1024 && queueHead * 2 >= queue.length) {
+    queue = queue.slice(queueHead);
+    queueHead = 0;
+  }
+  return item;
+}
+
+function appendNewQueueItems(items: readonly LegacyFlowItem[]): void {
+  for (const item of items) {
+    const state = itemStates.get(item.mediaId);
+    if (state !== undefined) {
+      state.item = item;
+      continue;
+    }
+    if (queuedIds.has(item.mediaId)) {
+      continue;
+    }
+    queue.push(item);
+    queuedIds.add(item.mediaId);
+  }
+}
+
+function buildLayoutShell(): void {
+  const imgbox = imgboxElement.value;
+  if (imgbox === null) {
     return;
   }
 
-  props.browser.setViewport({
-    width: element.clientWidth,
-    height: element.clientHeight,
-    scrollTop: element.scrollTop,
-    devicePixelRatio: Math.max(1, window.devicePixelRatio || 1),
-  });
+  imgbox.replaceChildren();
+  columnElements = [];
+  columnHeights = [];
+  masonryFrontierHeight = 0;
+
+  if (snapshot.value.layoutMode === "masonry") {
+    imgbox.className = "legacy-imgbox masonry";
+    for (let index = 0; index < LEGACY_COLUMN_COUNT; index += 1) {
+      const column = document.createElement("div");
+      column.className = "legacy-column";
+      imgbox.appendChild(column);
+      columnElements.push(column);
+      columnHeights.push(0);
+    }
+    updateMasonryColumnWidth();
+  } else {
+    imgbox.className = "legacy-imgbox justified";
+  }
+  updateFlowContentTop();
+}
+
+function updateFlowContentTop(): void {
+  const viewport = viewportElement.value;
+  if (viewport === null) {
+    flowContentTop = 0;
+    return;
+  }
+  const root = document.documentElement;
+  flowContentTop = viewport.getBoundingClientRect().top + root.scrollTop;
+}
+
+function updateMasonryColumnWidth(): void {
+  const viewport = viewportElement.value;
+  const imgbox = imgboxElement.value;
+  const availableWidth = viewport?.clientWidth ?? imgbox?.clientWidth ?? 1;
+  const totalGap = LEGACY_COLUMN_GAP * Math.max(0, LEGACY_COLUMN_COUNT - 1);
+  masonryColumnWidth = Math.max(1, (availableWidth - totalGap) / LEGACY_COLUMN_COUNT);
+}
+
+function reconcileMasonryHeightsFromLayout(): void {
+  if (snapshot.value.layoutMode !== "masonry" || columnElements.length === 0) {
+    return;
+  }
+
+  columnHeights = columnElements.map((column) => column.offsetHeight);
+  updateMasonryFrontier();
+}
+
+function rebuildMasonryHeightModel(): void {
+  updateFlowContentTop();
+  if (snapshot.value.layoutMode !== "masonry" || columnElements.length === 0) {
+    return;
+  }
+
+  updateMasonryColumnWidth();
+  reconcileMasonryHeightsFromLayout();
+}
+
+function estimatedMasonryImageHeight(img: HTMLImageElement): number {
+  if (img.naturalWidth <= 0 || img.naturalHeight <= 0) {
+    return 0;
+  }
+  return masonryColumnWidth * (img.naturalHeight / img.naturalWidth);
+}
+
+function shortestColumnIndex(): number {
+  if (columnHeights.length === 0) {
+    return -1;
+  }
+  let shortestIndex = 0;
+  let shortestHeight = columnHeights[0];
+  for (let index = 1; index < columnHeights.length; index += 1) {
+    if (columnHeights[index] < shortestHeight) {
+      shortestHeight = columnHeights[index];
+      shortestIndex = index;
+    }
+  }
+  return shortestIndex;
+}
+
+function updateMasonryFrontier(): void {
+  if (columnHeights.length === 0) {
+    masonryFrontierHeight = 0;
+    return;
+  }
+  masonryFrontierHeight = Math.min(...columnHeights);
+}
+
+function nearLoadedEnd(): boolean {
+  const root = document.documentElement;
+  const imgbox = imgboxElement.value;
+  if (!rootScrollEnabled || imgbox === null) {
+    return false;
+  }
+  if (renderedCount === 0) {
+    return true;
+  }
+
+  const localFrontier =
+    snapshot.value.layoutMode === "masonry"
+      ? masonryFrontierHeight
+      : imgbox.scrollHeight;
+  const documentFrontier = flowContentTop + localFrontier;
+  return (
+    root.scrollTop + root.clientHeight >=
+    documentFrontier - root.clientHeight
+  );
+}
+
+function hasPendingVisualWork(): boolean {
+  return loading > 0 || pendingAppends.length > 0;
+}
+
+function loadNext(): void {
+  if (destroyed || !rootScrollEnabled) {
+    return;
+  }
+
+  if (activeBatchRemaining === 0) {
+    if (hasPendingVisualWork() || !nearLoadedEnd()) {
+      return;
+    }
+    activeBatchRemaining = LEGACY_BATCH_SIZE;
+    activeBatchEpoch = layoutEpoch;
+  }
+
+  if (activeBatchEpoch !== layoutEpoch) {
+    activeBatchRemaining = 0;
+    return;
+  }
+
+  while (activeBatchRemaining > 0 && queuedItemCount() > 0) {
+    const item = shiftQueuedItem();
+    if (item === undefined) {
+      break;
+    }
+    queuedIds.delete(item.mediaId);
+    activeBatchRemaining -= 1;
+
+    let state = itemStates.get(item.mediaId);
+    if (state === undefined) {
+      state = {
+        item,
+        img: null,
+        wrap: null,
+        status: "idle",
+        loadEpoch: activeBatchEpoch,
+      };
+      itemStates.set(item.mediaId, state);
+    } else {
+      state.item = item;
+    }
+
+    if (state.status === "ready" && state.wrap !== null) {
+      queueAppend(state.wrap, activeBatchEpoch, false);
+      continue;
+    }
+
+    if (state.status === "loading") {
+      continue;
+    }
+
+    startImageLoad(state, activeBatchEpoch);
+  }
+
+  if (activeBatchRemaining === 0 && !hasPendingVisualWork()) {
+    scheduleLoadNext(0);
+  }
+}
+
+function finishPendingProducerBatch(): void {
+  if (activeBatchRemaining === 0 || queuedItemCount() > 0) {
+    return;
+  }
+  activeBatchRemaining = 0;
+  if (!hasPendingVisualWork()) {
+    scheduleLoadNext(0);
+  }
+}
+
+function startImageLoad(state: LegacyItemState, epoch: number): void {
+  const img = new Image();
+  state.img = img;
+  state.status = "loading";
+  state.loadEpoch = epoch;
+
+  img.alt = state.item.name;
+  img.draggable = false;
+  img.className = "legacy-image";
+  img.dataset.mediaId = state.item.mediaId;
+
+  loading += 1;
+  let completed = false;
+  const onComplete = () => {
+    if (completed || destroyed) {
+      return;
+    }
+    completed = true;
+    img.onload = null;
+    img.onerror = null;
+
+    if (state.loadEpoch !== layoutEpoch || epoch !== layoutEpoch) {
+      return;
+    }
+
+    const wrap = createWrap(state, img);
+    state.wrap = wrap;
+    state.status = "ready";
+    queueAppend(wrap, epoch, true);
+  };
+
+  img.onload = onComplete;
+  img.onerror = onComplete;
+  img.src = state.item.resourceUri;
+}
+
+function createWrap(state: LegacyItemState, img: HTMLImageElement): HTMLElement {
+  const wrap = document.createElement("figure");
+  wrap.className = "legacy-wrap";
+  wrap.dataset.mediaId = state.item.mediaId;
+  wrap.title = `${state.item.relativePath} — click to select, double-click to open`;
+  wrap.appendChild(img);
+  applySelectionClass(wrap, state.item.mediaId);
+  return wrap;
+}
+
+function queueAppend(
+  wrap: HTMLElement,
+  epoch: number,
+  completesLoad: boolean,
+): void {
+  const mediaId = wrap.dataset.mediaId;
+  if (mediaId !== undefined && pendingAppendIds.has(mediaId)) {
+    return;
+  }
+  if (mediaId !== undefined) {
+    pendingAppendIds.add(mediaId);
+  }
+  pendingAppends.push({ wrap, epoch, completesLoad });
+  scheduleAppendFrame();
+}
+
+function scheduleAppendFrame(): void {
+  if (appendFrame !== null || destroyed || pendingAppends.length === 0) {
+    return;
+  }
+  appendFrame = window.requestAnimationFrame(flushPendingAppends);
+}
+
+function flushPendingAppends(timestamp: number): void {
+  appendFrame = null;
+  if (destroyed) {
+    return;
+  }
+
+  const scrollActive = timestamp - lastScrollAt < SCROLL_ACTIVE_WINDOW_MS;
+  const budget = scrollActive
+    ? APPENDS_PER_SCROLL_FRAME
+    : APPENDS_PER_IDLE_FRAME;
+  let committed = 0;
+
+  const masonryFragments =
+    snapshot.value.layoutMode === "masonry"
+      ? columnElements.map(() => document.createDocumentFragment())
+      : null;
+  const justifiedFragment =
+    snapshot.value.layoutMode === "justified"
+      ? document.createDocumentFragment()
+      : null;
+
+  if (masonryFragments !== null && pendingAppends.length > 0) {
+    reconcileMasonryHeightsFromLayout();
+  }
+
+  while (committed < budget && pendingAppends.length > 0) {
+    const pending = pendingAppends.shift();
+    if (pending === undefined) {
+      break;
+    }
+    const mediaId = pending.wrap.dataset.mediaId;
+    if (mediaId !== undefined) {
+      pendingAppendIds.delete(mediaId);
+    }
+
+    if (pending.epoch !== layoutEpoch) {
+      if (pending.completesLoad) {
+        loading = Math.max(0, loading - 1);
+      }
+      continue;
+    }
+
+    appendWrap(pending.wrap, masonryFragments, justifiedFragment);
+    if (pending.completesLoad) {
+      loading = Math.max(0, loading - 1);
+    }
+    committed += 1;
+  }
+
+  if (masonryFragments !== null) {
+    for (let index = 0; index < masonryFragments.length; index += 1) {
+      const fragment = masonryFragments[index];
+      const column = columnElements[index];
+      if (fragment.childNodes.length > 0 && column !== undefined) {
+        column.appendChild(fragment);
+      }
+    }
+  } else if (
+    justifiedFragment !== null &&
+    justifiedFragment.childNodes.length > 0
+  ) {
+    imgboxElement.value?.appendChild(justifiedFragment);
+  }
+
+  if (pendingAppends.length > 0) {
+    scheduleAppendFrame();
+    return;
+  }
+
+  if (loading === 0 && activeBatchRemaining === 0) {
+    scheduleLoadNext(0);
+  }
+}
+
+function appendWrap(
+  wrap: HTMLElement,
+  masonryFragments: readonly DocumentFragment[] | null = null,
+  justifiedFragment: DocumentFragment | null = null,
+): void {
+  const imgbox = imgboxElement.value;
+  if (imgbox === null) {
+    return;
+  }
+
+  renderedCount += 1;
+  wrap.id = `legacy-img-${renderedCount}`;
+  wrap.style.removeProperty("flex-basis");
+  wrap.style.removeProperty("flex-grow");
+
+  if (snapshot.value.layoutMode === "masonry") {
+    if (columnElements.length === 0 || columnHeights.length === 0) {
+      buildLayoutShell();
+    }
+    const targetIndex = shortestColumnIndex();
+    const target = columnElements[targetIndex];
+    const img = wrap.firstElementChild;
+    if (targetIndex < 0 || target === undefined || !(img instanceof HTMLImageElement)) {
+      return;
+    }
+
+    const fragment = masonryFragments?.[targetIndex];
+    if (fragment !== undefined) {
+      fragment.appendChild(wrap);
+    } else {
+      target.appendChild(wrap);
+    }
+    const gap = columnHeights[targetIndex] > 0 ? LEGACY_ROW_GAP : 0;
+    columnHeights[targetIndex] += gap + estimatedMasonryImageHeight(img);
+    updateMasonryFrontier();
+    return;
+  }
+
+  const img = wrap.firstElementChild;
+  if (img instanceof HTMLImageElement) {
+    const width = Math.max(1, img.naturalWidth);
+    const height = Math.max(1, img.naturalHeight);
+    const ratio = width / height;
+    wrap.style.flexBasis = `${ratio * LEGACY_JUSTIFIED_HEIGHT}px`;
+    wrap.style.flexGrow = String(ratio);
+  }
+  if (justifiedFragment !== null) {
+    justifiedFragment.appendChild(wrap);
+  } else {
+    imgbox.appendChild(wrap);
+  }
+}
+
+function mediaIdFromEvent(event: Event): string | null {
+  const target = event.target;
+  if (!(target instanceof Element)) {
+    return null;
+  }
+  const wrap = target.closest<HTMLElement>(".legacy-wrap[data-media-id]");
+  if (wrap === null || !imgboxElement.value?.contains(wrap)) {
+    return null;
+  }
+  return wrap.dataset.mediaId ?? null;
+}
+
+function handleMediaClick(event: MouseEvent): void {
+  const mediaId = mediaIdFromEvent(event);
+  if (mediaId === null) {
+    return;
+  }
+  if (event.ctrlKey || event.metaKey) {
+    selection.toggle(mediaId);
+  } else {
+    selection.replace(mediaId);
+  }
+}
+
+function handleMediaDoubleClick(event: MouseEvent): void {
+  const mediaId = mediaIdFromEvent(event);
+  if (mediaId !== null) {
+    emit("activate", mediaId);
+  }
+}
+
+function refreshSelectionClasses(): void {
+  for (const [mediaId, state] of itemStates) {
+    if (state.wrap !== null) {
+      applySelectionClass(state.wrap, mediaId);
+    }
+  }
+}
+
+function applySelectionClass(wrap: HTMLElement, mediaId: string): void {
+  wrap.classList.toggle(
+    "selected",
+    selection.snapshot.selectedIds.includes(mediaId),
+  );
+}
+
+function handleDocumentScroll(): void {
+  if (!rootScrollEnabled) {
+    return;
+  }
+  lastScrollAt = performance.now();
+  loadNext();
+}
+
+function handleWindowResize(): void {
+  rebuildMasonryHeightModel();
+  loadNext();
+}
+
+function syncRootScrollerFromVisibility(): void {
+  const viewport = viewportElement.value;
+  const shouldEnable = viewport !== null && viewport.style.display !== "none";
+  if (shouldEnable === rootScrollEnabled) {
+    return;
+  }
+
+  const root = document.documentElement;
+  if (shouldEnable) {
+    root.classList.add(ROOT_SCROLL_CLASS);
+    document.body.classList.add(ROOT_SCROLL_CLASS);
+    rootScrollEnabled = true;
+    window.requestAnimationFrame(() => {
+      if (!rootScrollEnabled || destroyed) {
+        return;
+      }
+      root.scrollTop = savedFlowScrollTop;
+      rebuildMasonryHeightModel();
+      loadNext();
+    });
+    return;
+  }
+
+  savedFlowScrollTop = root.scrollTop;
+  rootScrollEnabled = false;
+  root.classList.remove(ROOT_SCROLL_CLASS);
+  document.body.classList.remove(ROOT_SCROLL_CLASS);
+  root.scrollTop = 0;
+}
+
+function disableRootScroller(): void {
+  const root = document.documentElement;
+  if (rootScrollEnabled) {
+    savedFlowScrollTop = root.scrollTop;
+  }
+  rootScrollEnabled = false;
+  root.classList.remove(ROOT_SCROLL_CLASS);
+  document.body.classList.remove(ROOT_SCROLL_CLASS);
+  root.scrollTop = 0;
+}
+
+function scheduleLoadNext(delay: number): void {
+  if (loadTimer !== null || destroyed) {
+    return;
+  }
+  loadTimer = window.setTimeout(() => {
+    loadTimer = null;
+    loadNext();
+  }, delay);
+}
+
+function cancelScheduledLoad(): void {
+  if (loadTimer !== null) {
+    window.clearTimeout(loadTimer);
+    loadTimer = null;
+  }
+}
+
+function cancelPendingAppends(): void {
+  if (appendFrame !== null) {
+    window.cancelAnimationFrame(appendFrame);
+    appendFrame = null;
+  }
+  pendingAppends = [];
+  pendingAppendIds.clear();
+}
+
+function detachImageCallbacks(state: LegacyItemState): void {
+  if (state.img !== null) {
+    state.img.onload = null;
+    state.img.onerror = null;
+  }
+}
+
+function scrollToStart(): void {
+  savedFlowScrollTop = 0;
+  if (rootScrollEnabled) {
+    document.documentElement.scrollTop = 0;
+  }
+}
+
+function isTerminalScanState(status: string | undefined): boolean {
+  return status === "finished" || status === "cancelled" || status === "failed";
 }
 
 onMounted(() => {
-  unsubscribe = props.browser.subscribe((nextSnapshot) => {
-    snapshot.value = nextSnapshot;
-  });
-  unsubscribeSelection = selection.subscribe((nextSnapshot) => {
-    selectionSnapshot.value = nextSnapshot;
-  });
+  destroyed = false;
+  buildLayoutShell();
+  unsubscribeBrowser = props.browser.subscribe(handleBrowserEvent);
+  unsubscribeSelection = selection.subscribe(refreshSelectionClasses);
 
-  const element = viewportElement.value;
-  if (element !== null) {
-    resizeObserver = new ResizeObserver(scheduleViewportSync);
-    resizeObserver.observe(element);
+  document.addEventListener("scroll", handleDocumentScroll, { passive: true });
+  window.addEventListener("resize", handleWindowResize, { passive: true });
+
+  const viewport = viewportElement.value;
+  if (viewport !== null) {
+    displayObserver = new MutationObserver(syncRootScrollerFromVisibility);
+    displayObserver.observe(viewport, {
+      attributes: true,
+      attributeFilter: ["style"],
+    });
   }
-  scheduleViewportSync();
+  syncRootScrollerFromVisibility();
+  loadNext();
 });
 
 onBeforeUnmount(() => {
-  unsubscribe?.();
+  destroyed = true;
+  layoutEpoch += 1;
+  activeBatchRemaining = 0;
+  unsubscribeBrowser?.();
   unsubscribeSelection?.();
-  resizeObserver?.disconnect();
-  if (viewportFrame !== null) {
-    window.cancelAnimationFrame(viewportFrame);
+  displayObserver?.disconnect();
+  document.removeEventListener("scroll", handleDocumentScroll);
+  window.removeEventListener("resize", handleWindowResize);
+  cancelScheduledLoad();
+  cancelPendingAppends();
+  disableRootScroller();
+  for (const state of itemStates.values()) {
+    detachImageCallbacks(state);
   }
 });
 </script>
@@ -104,136 +756,122 @@ onBeforeUnmount(() => {
 <template>
   <section
     ref="viewportElement"
-    class="flow-viewport"
+    class="legacy-flow-viewport"
     aria-label="Flow media browser"
-    @scroll.passive="scheduleViewportSync"
   >
-    <div class="flow-canvas" :style="canvasStyle">
-      <figure
-        v-for="tile in snapshot.tiles"
-        :key="tile.mediaId"
-        class="flow-tile"
-        :class="{
-          overscan: tile.priority === 'overscan',
-          selected: selectedIds.has(tile.mediaId),
-        }"
-        :style="tileStyle(tile)"
-        :title="`${tile.relativePath} — click to select, double-click to open`"
-        @click="selectTile(tile, $event)"
-        @dblclick="emit('activate', tile.mediaId)"
-      >
-        <img
-          v-if="tile.thumbnailStatus === 'ready' && tile.thumbnailUri"
-          class="flow-image"
-          :src="tile.thumbnailUri"
-          :alt="tile.name"
-          decoding="async"
-          loading="eager"
-          draggable="false"
-        />
-        <div v-else class="flow-placeholder">
-          <span v-if="tile.thumbnailStatus === 'error'" class="placeholder-label">
-            Preview unavailable
-          </span>
-          <span v-else-if="tile.thumbnailStatus === 'unsupported'" class="placeholder-label">
-            {{ tile.kind }}
-          </span>
-          <span v-else class="loading-pulse" aria-hidden="true" />
-        </div>
-      </figure>
-    </div>
+    <div
+      ref="imgboxElement"
+      class="legacy-imgbox masonry"
+      @click="handleMediaClick"
+      @dblclick="handleMediaDoubleClick"
+    />
   </section>
 </template>
 
 <style scoped>
-.flow-viewport {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  min-height: 0;
-  overflow: auto;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
-  contain: strict;
+:global(html.wf-flow-root-scroll) {
+  height: auto;
+  min-height: 100%;
+  overflow-x: hidden;
+  overflow-y: scroll;
 }
 
-.flow-canvas {
-  position: relative;
-  width: 100%;
+:global(body.wf-flow-root-scroll) {
+  height: auto;
+  min-height: 100vh;
+  overflow: visible;
 }
 
-.flow-tile {
-  position: absolute;
+:global(body.wf-flow-root-scroll #app) {
+  height: auto;
+  min-height: 100vh;
+}
+
+:global(body.wf-flow-root-scroll .viewer-shell) {
+  height: auto !important;
+  min-height: 100vh;
+  display: block;
+}
+
+:global(body.wf-flow-root-scroll .viewer-toolbar) {
+  position: sticky;
   top: 0;
-  left: 0;
-  margin: 0;
-  overflow: hidden;
-  background: var(--wf-surface-raised);
-  contain: layout paint style;
-  content-visibility: auto;
-  cursor: default;
+  z-index: 20;
 }
 
-.flow-tile.selected {
-  z-index: 1;
+:global(body.wf-flow-root-scroll .viewer-stage) {
+  min-height: calc(100vh - var(--wf-toolbar-height));
+  overflow: visible !important;
+}
+
+:global(body.wf-flow-root-scroll .viewer-stage > .legacy-flow-viewport.viewer-pane) {
+  position: relative !important;
+  inset: auto !important;
+  min-height: calc(100vh - var(--wf-toolbar-height));
+}
+
+.legacy-flow-viewport {
+  position: relative;
+  width: 100%;
+  min-height: calc(100vh - var(--wf-toolbar-height));
+}
+
+.legacy-imgbox.masonry {
+  display: flex;
+  align-items: flex-start;
+  gap: v-bind('LEGACY_COLUMN_GAP + "px"');
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.legacy-column {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: v-bind('LEGACY_ROW_GAP + "px"');
+}
+
+.legacy-imgbox.justified {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: v-bind('LEGACY_ROW_GAP + "px"') v-bind('LEGACY_COLUMN_GAP + "px"');
+  width: 100%;
+}
+
+:deep(.legacy-wrap) {
+  position: relative;
+  margin: 0;
+  min-width: 0;
+  cursor: pointer;
+}
+
+:deep(.legacy-wrap.selected) {
   box-shadow: inset 0 0 0 2px var(--wf-accent);
 }
 
-.flow-tile.overscan {
-  pointer-events: none;
+.legacy-imgbox.masonry :deep(.legacy-wrap) {
+  width: 100%;
+  flex: 0 0 auto;
 }
 
-.flow-image {
-  width: 100%;
-  height: 100%;
+.legacy-imgbox.justified :deep(.legacy-wrap) {
+  height: v-bind('LEGACY_JUSTIFIED_HEIGHT + "px"');
+  min-width: 0;
+}
+
+:deep(.legacy-image) {
   display: block;
-  object-fit: cover;
+  width: 100%;
+  height: auto;
   user-select: none;
   -webkit-user-drag: none;
 }
 
-.flow-placeholder {
+.legacy-imgbox.justified :deep(.legacy-image) {
   width: 100%;
   height: 100%;
-  display: grid;
-  place-items: center;
-  background:
-    linear-gradient(135deg, var(--wf-placeholder-sheen), transparent 60%),
-    var(--wf-surface-raised);
-}
-
-.placeholder-label {
-  max-width: calc(100% - 24px);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--wf-text-muted);
-  font-size: 0.72rem;
-  text-transform: capitalize;
-  white-space: nowrap;
-}
-
-.loading-pulse {
-  width: 26px;
-  height: 3px;
-  border-radius: 999px;
-  background: var(--wf-loading-indicator);
-  animation: pulse 1.1s ease-in-out infinite alternate;
-}
-
-@keyframes pulse {
-  from {
-    opacity: 0.35;
-    transform: scaleX(0.7);
-  }
-  to {
-    opacity: 1;
-    transform: scaleX(1);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .loading-pulse {
-    animation: none;
-  }
+  object-fit: cover;
 }
 </style>

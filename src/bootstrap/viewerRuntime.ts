@@ -1,4 +1,4 @@
-import { MediaBrowserController } from "../application/browser/mediaBrowserController";
+import { LegacyFlowBrowserController } from "../application/browser/legacyFlowBrowserController";
 import { CanvasBrowserController } from "../application/canvas/canvasBrowserController";
 import { CanvasSceneModel } from "../application/canvas/canvasSceneModel";
 import {
@@ -22,6 +22,8 @@ export interface ViewerRuntimePorts {
   sourcePicker: SourcePickerPort;
   representation: MediaRepresentationPort;
   resource: MediaResourcePort;
+  /** Optional Flow-only source transport used by architecture experiments. */
+  flowResource?: MediaResourcePort;
   detail: MediaDetailPort;
 }
 
@@ -37,7 +39,7 @@ export interface ViewerRuntime {
   readonly workspace: ViewerWorkspaceController;
   readonly activation: MediaActivationController;
   readonly previewDetails: PreviewMediaDetailController;
-  readonly flowBrowser: MediaBrowserController;
+  readonly flowBrowser: LegacyFlowBrowserController;
   readonly createCanvasBrowser: () => CanvasBrowserController;
   dispose(): void;
 }
@@ -59,6 +61,12 @@ export function createViewerRuntime(
   const workspace = new ViewerWorkspaceController(
     sessionController,
     ports.sourcePicker,
+    {
+      // The legacy browser started consuming files almost as soon as traversal
+      // discovered them. Keep native IPC amortized, but make first discovery
+      // substantially earlier than the production 64-item batch.
+      scanBatchSize: 16,
+    },
   );
   const activation = new MediaActivationController(
     sessionController,
@@ -68,12 +76,15 @@ export function createViewerRuntime(
     activation,
     ports.detail,
   );
-  const flowBrowser = new MediaBrowserController({
+
+  // Experimental Flow path. It deliberately bypasses MediaBrowserController
+  // and the derived-thumbnail scheduler. A separate Flow resource port keeps
+  // transport experiments from changing Canvas or preview behavior.
+  const flowBrowser = new LegacyFlowBrowserController(
     sessionController,
-    sourcePicker: ports.sourcePicker,
-    representationScheduler,
-    resourcePort: ports.resource,
-  });
+    ports.flowResource ?? ports.resource,
+  );
+
   const canvasScene = new CanvasSceneModel({
     atlas: {
       worldWidth: 4096,

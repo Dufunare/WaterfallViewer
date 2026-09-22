@@ -15,12 +15,9 @@ export type MediaVisualProjection =
     };
 
 /**
- * Projects media metadata into browseable geometry without starting a decoder.
- *
- * Images are expected to have trustworthy header metadata before reaching the
- * frontend, so missing/invalid image geometry remains deferred. Video and
- * audio are still useful to browse before richer metadata extraction exists:
- * video receives a conventional 16:9 placeholder and audio a square tile.
+ * The legacy Flow experiment intentionally does not read image dimensions while
+ * scanning. Views that still need pre-decode geometry therefore receive a
+ * conservative fallback until richer metadata is requested elsewhere.
  */
 export function projectMediaVisual(item: MediaItem): MediaVisualProjection {
   const visual = item.visual;
@@ -48,7 +45,11 @@ export function projectMediaVisual(item: MediaItem): MediaVisualProjection {
     };
   }
 
-  if (item.kind === "audio") {
+  if (
+    item.kind === "image" ||
+    item.kind === "animated-image" ||
+    item.kind === "audio"
+  ) {
     return {
       kind: "visual",
       width: 1,

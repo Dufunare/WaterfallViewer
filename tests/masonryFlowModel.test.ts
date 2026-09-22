@@ -126,7 +126,7 @@ describe("MasonryFlowModel", () => {
     expect(snapshot.layout.nodes[1].x).toBe(115);
   });
 
-  it("defers items without usable visual metadata instead of crashing layout", () => {
+  it("uses square fallback geometry for metadata-light images", () => {
     const model = new MasonryFlowModel(config);
     model.sync("session-1", [
       media("valid", 100, 100),
@@ -136,11 +136,12 @@ describe("MasonryFlowModel", () => {
 
     const snapshot = model.snapshot();
     expect(snapshot.itemCount).toBe(3);
-    expect(snapshot.layoutItemCount).toBe(1);
-    expect(snapshot.deferredMedia).toEqual([
-      { mediaId: "missing", reason: "missing-visual" },
-      { mediaId: "invalid", reason: "invalid-visual" },
-    ]);
+    expect(snapshot.layoutItemCount).toBe(3);
+    expect(snapshot.deferredMedia).toEqual([]);
+    for (const mediaId of ["missing", "invalid"]) {
+      const node = snapshot.layout.nodes.find((candidate) => candidate.mediaId === mediaId)!;
+      expect(node.width / node.height).toBeCloseTo(1);
+    }
   });
 
   it("rejects ambiguous duplicate ids without mutating the prior projection", () => {
