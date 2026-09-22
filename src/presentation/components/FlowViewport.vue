@@ -434,7 +434,16 @@ function flushPendingAppends(timestamp: number): void {
     : APPENDS_PER_IDLE_FRAME;
   let committed = 0;
 
-  if (snapshot.value.layoutMode === "masonry" && pendingAppends.length > 0) {
+  const masonryFragments =
+    snapshot.value.layoutMode === "masonry"
+      ? columnElements.map(() => document.createDocumentFragment())
+      : null;
+  const justifiedFragment =
+    snapshot.value.layoutMode === "justified"
+      ? document.createDocumentFragment()
+      : null;
+
+  if (masonryFragments !== null && pendingAppends.length > 0) {
     reconcileMasonryHeightsFromLayout();
   }
 
@@ -455,11 +464,26 @@ function flushPendingAppends(timestamp: number): void {
       continue;
     }
 
-    appendWrap(pending.wrap);
+    appendWrap(pending.wrap, masonryFragments, justifiedFragment);
     if (pending.completesLoad) {
       loading = Math.max(0, loading - 1);
     }
     committed += 1;
+  }
+
+  if (masonryFragments !== null) {
+    for (let index = 0; index < masonryFragments.length; index += 1) {
+      const fragment = masonryFragments[index];
+      const column = columnElements[index];
+      if (fragment.childNodes.length > 0 && column !== undefined) {
+        column.appendChild(fragment);
+      }
+    }
+  } else if (
+    justifiedFragment !== null &&
+    justifiedFragment.childNodes.length > 0
+  ) {
+    imgboxElement.value?.appendChild(justifiedFragment);
   }
 
   if (pendingAppends.length > 0) {
@@ -472,7 +496,11 @@ function flushPendingAppends(timestamp: number): void {
   }
 }
 
-function appendWrap(wrap: HTMLElement): void {
+function appendWrap(
+  wrap: HTMLElement,
+  masonryFragments: readonly DocumentFragment[] | null = null,
+  justifiedFragment: DocumentFragment | null = null,
+): void {
   const imgbox = imgboxElement.value;
   if (imgbox === null) {
     return;
@@ -494,7 +522,12 @@ function appendWrap(wrap: HTMLElement): void {
       return;
     }
 
-    target.appendChild(wrap);
+    const fragment = masonryFragments?.[targetIndex];
+    if (fragment !== undefined) {
+      fragment.appendChild(wrap);
+    } else {
+      target.appendChild(wrap);
+    }
     const gap = columnHeights[targetIndex] > 0 ? LEGACY_ROW_GAP : 0;
     columnHeights[targetIndex] += gap + estimatedMasonryImageHeight(img);
     updateMasonryFrontier();
@@ -509,7 +542,11 @@ function appendWrap(wrap: HTMLElement): void {
     wrap.style.flexBasis = `${ratio * LEGACY_JUSTIFIED_HEIGHT}px`;
     wrap.style.flexGrow = String(ratio);
   }
-  imgbox.appendChild(wrap);
+  if (justifiedFragment !== null) {
+    justifiedFragment.appendChild(wrap);
+  } else {
+    imgbox.appendChild(wrap);
+  }
 }
 
 function mediaIdFromEvent(event: Event): string | null {
