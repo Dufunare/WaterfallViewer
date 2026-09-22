@@ -47,6 +47,7 @@ let masonryColumnWidth = 1;
 let masonryFrontierHeight = 0;
 let flowContentTop = 0;
 let queue: LegacyFlowItem[] = [];
+let queueHead = 0;
 let queuedIds = new Set<string>();
 let itemStates = new Map<string, LegacyItemState>();
 let activeBatchRemaining = 0;
@@ -106,6 +107,7 @@ function hardReset(
   activeBatchEpoch = layoutEpoch;
   activeSessionId = sessionId;
   queue = [];
+  queueHead = 0;
   queuedIds.clear();
 
   for (const state of itemStates.values()) {
@@ -128,6 +130,7 @@ function softReflow(items: readonly LegacyFlowItem[]): void {
   activeBatchRemaining = 0;
   activeBatchEpoch = layoutEpoch;
   queue = [];
+  queueHead = 0;
   queuedIds.clear();
 
   for (const state of itemStates.values()) {
@@ -150,6 +153,24 @@ function softReflow(items: readonly LegacyFlowItem[]): void {
     queuedIds.add(item.mediaId);
   }
   loadNext();
+}
+
+function queuedItemCount(): number {
+  return queue.length - queueHead;
+}
+
+function shiftQueuedItem(): LegacyFlowItem | undefined {
+  if (queueHead >= queue.length) {
+    return undefined;
+  }
+  const item = queue[queueHead];
+  queueHead += 1;
+
+  if (queueHead >= 1024 && queueHead * 2 >= queue.length) {
+    queue = queue.slice(queueHead);
+    queueHead = 0;
+  }
+  return item;
 }
 
 function appendNewQueueItems(items: readonly LegacyFlowItem[]): void {
@@ -304,8 +325,8 @@ function loadNext(): void {
     return;
   }
 
-  while (activeBatchRemaining > 0 && queue.length > 0) {
-    const item = queue.shift();
+  while (activeBatchRemaining > 0 && queuedItemCount() > 0) {
+    const item = shiftQueuedItem();
     if (item === undefined) {
       break;
     }
@@ -344,7 +365,7 @@ function loadNext(): void {
 }
 
 function finishPendingProducerBatch(): void {
-  if (activeBatchRemaining === 0 || queue.length > 0) {
+  if (activeBatchRemaining === 0 || queuedItemCount() > 0) {
     return;
   }
   activeBatchRemaining = 0;
