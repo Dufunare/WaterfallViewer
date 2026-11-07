@@ -64,6 +64,38 @@ describe("freeform canvas packing", () => {
     }
   });
 
+  it("keeps a narrow default gap and reuses recent partially filled blocks", () => {
+    const atlas = new FreeformCanvasLayoutBuilder();
+    const pair = atlas.append([
+      { mediaId: "a", width: 200, height: 200 },
+      { mediaId: "b", width: 200, height: 200 },
+    ]);
+    const a = pair[0];
+    const b = pair[1];
+    const horizontalGap = Math.abs(b.x - (a.x + a.width));
+    const verticalGap = Math.abs(b.y - (a.y + a.height));
+    expect(Math.min(horizontalGap, verticalGap)).toBeLessThanOrEqual(4);
+
+    const bulk = images(250);
+    atlas.append(bulk);
+    const before = atlas.snapshot();
+    const append = atlas.append(images(250).map((item, index) => ({
+      ...item, mediaId: "more-" + index,
+    })));
+    expect(atlas.snapshot().slice(0, before.length)).toEqual(before);
+    expect(append).toHaveLength(250);
+  });
+
+  it("bounded count agrees with visibility queries", () => {
+    const atlas = new FreeformCanvasLayoutBuilder();
+    atlas.append(images(768));
+    const rect = { x: -700, y: -650, width: 2300, height: 2100 };
+    const count = atlas.query(rect).length;
+    expect(atlas.count(rect)).toBe(count);
+    expect(atlas.count(rect, 10)).toBe(Math.min(count, 10));
+    expect(() => atlas.count(rect, 0)).toThrow();
+  });
+
   it("rejects invalid batches atomically and bounds panoramas", () => {
     const atlas = new FreeformCanvasLayoutBuilder();
     const first = atlas.append([{ mediaId: "first", width: 16, height: 9 }])[0];
