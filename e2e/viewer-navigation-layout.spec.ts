@@ -82,6 +82,30 @@ test("free canvas reuses the same eager image element during small drags", async
   }, mediaId)).toBe(true);
 });
 
+test("free canvas retains decoded image nodes across a pan reversal", async ({ page }) => {
+  await page.getByRole("group", { name: "Viewer mode" })
+    .getByRole("button", { name: "Canvas" }).click();
+  const canvas = page.getByRole("region", { name: "Free canvas media browser" });
+  const first = canvas.locator(".canvas-media").first();
+  await expect(first).toBeVisible();
+  const id = await first.getAttribute("data-canvas-media-id");
+  if (id === null) throw new Error("missing media id");
+  await first.evaluate((element) => {
+    (window as Window & { __retainedCanvasTile?: Element }).__retainedCanvasTile = element;
+  });
+
+  await canvas.focus();
+  for (let i = 0; i < 28; i++) await page.keyboard.press("ArrowRight");
+  await expect(canvas.locator(`[data-canvas-media-id="${id}"]`)).toHaveCount(0);
+
+  for (let i = 0; i < 28; i++) await page.keyboard.press("ArrowLeft");
+  const returned = canvas.locator(`[data-canvas-media-id="${id}"]`);
+  await expect(returned).toBeVisible();
+  expect(await returned.evaluate((element) =>
+    element === (window as Window & { __retainedCanvasTile?: Element }).__retainedCanvasTile,
+  )).toBe(true);
+});
+
 test("free canvas pans, zooms and opens image preview", async ({ page }) => {
   await page.getByRole("group", { name: "Viewer mode" })
     .getByRole("button", { name: "Canvas" }).click();
