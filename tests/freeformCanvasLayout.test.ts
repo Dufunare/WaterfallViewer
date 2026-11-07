@@ -49,7 +49,8 @@ describe("freeform canvas packing", () => {
       expect(hits.map((hit) => hit.mediaId)).toEqual([node.mediaId]);
     }
     const filled = nodes.reduce((area, node) => area + node.width * node.height, 0);
-    expect(filled / (bounds.width * bounds.height)).toBeGreaterThan(0.4);
+    // Dense packing should waste little space without cropping images.
+    expect(filled / (bounds.width * bounds.height)).toBeGreaterThan(0.8);
   });
 
   it("spatial queries match full scans", () => {
@@ -72,9 +73,9 @@ describe("freeform canvas packing", () => {
     ]);
     const a = pair[0];
     const b = pair[1];
-    const horizontalGap = Math.abs(b.x - (a.x + a.width));
-    const verticalGap = Math.abs(b.y - (a.y + a.height));
-    expect(Math.min(horizontalGap, verticalGap)).toBeLessThanOrEqual(4);
+    const horizontalGap = Math.max(0, b.x - a.x - a.width, a.x - b.x - b.width);
+    const verticalGap = Math.max(0, b.y - a.y - a.height, a.y - b.y - b.height);
+    expect(Math.max(horizontalGap, verticalGap)).toBeLessThanOrEqual(4);
 
     const bulk = images(250);
     atlas.append(bulk);
@@ -94,6 +95,34 @@ describe("freeform canvas packing", () => {
     expect(atlas.count(rect)).toBe(count);
     expect(atlas.count(rect, 10)).toBe(Math.min(count, 10));
     expect(() => atlas.count(rect, 0)).toThrow();
+  });
+
+  it("fills across old block boundaries instead of leaving broad empty seams", () => {
+    const atlas = new FreeformCanvasLayoutBuilder({ gap: 6 });
+    atlas.append(images(2000));
+    const nodes = atlas.snapshot();
+    const { width, height } = atlas.bounds;
+    const coverage = nodes.reduce((sum, node) => sum + node.width * node.height, 0);
+    expect(coverage / (width * height)).toBeGreaterThan(0.78);
+    expect(atlas.bounds.x).toBeLessThan(0);
+    expect(atlas.bounds.y).toBeLessThan(0);
+    expect(atlas.bounds.x + width).toBeGreaterThan(0);
+    expect(atlas.bounds.y + height).toBeGreaterThan(0);
+  });
+
+  it("retains image aspect ratios when resizing to fill holes", () => {
+    const atlas = new FreeformCanvasLayoutBuilder();
+    const input = images(600);
+    const nodes = atlas.append(input);
+    let resized = 0;
+    for (const [index, node] of nodes.entries()) {
+      const inputAspect = input[index].width / input[index].height;
+      const placedAspect = node.width / node.height;
+      expect(Math.abs(placedAspect / inputAspect - 1)).toBeLessThan(0.015);
+      if (index > 0 && node.width / Math.sqrt(70_000 * inputAspect) < 0.85) resized++;
+    }
+    // The packer must actually adapt sizes instead of using a fixed-width grid.
+    expect(resized).toBeGreaterThan(0);
   });
 
   it("rejects invalid batches atomically and bounds panoramas", () => {
