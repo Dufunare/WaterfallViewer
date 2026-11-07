@@ -54,6 +54,58 @@ test("rows use a horizontal scrollbar and vertical wheel moves horizontally", as
   ).toBe(0);
 });
 
+test("free canvas reuses the same eager image element during small drags", async ({ page }) => {
+  await page.getByRole("group", { name: "Viewer mode" })
+    .getByRole("button", { name: "Canvas" }).click();
+  const canvas = page.getByRole("region", { name: "Free canvas media browser" });
+  const first = canvas.locator(".canvas-media").first();
+  await expect(first).toBeVisible();
+  const mediaId = await first.getAttribute("data-canvas-media-id");
+  if (mediaId === null) throw new Error("missing media id");
+  await expect(first.locator("img")).toHaveAttribute("loading", "eager");
+  await first.evaluate((element) => {
+    (window as Window & { __firstCanvasTile?: Element }).__firstCanvasTile = element;
+  });
+  await first.click();
+  await expect(first).toHaveClass(/selected/);
+
+  const box = await canvas.boundingBox();
+  if (box === null) throw new Error("canvas bounds unavailable");
+  await page.mouse.move(box.x + 270, box.y + 240);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 320, box.y + 260, { steps: 5 });
+  await page.mouse.up();
+  expect(await canvas.evaluate((element, id) => {
+    const tile = [...element.querySelectorAll<HTMLElement>("[data-canvas-media-id]")]
+      .find((candidate) => candidate.dataset.canvasMediaId === id);
+    return tile === (window as Window & { __firstCanvasTile?: Element }).__firstCanvasTile;
+  }, mediaId)).toBe(true);
+});
+
+test("free canvas retains decoded image nodes across a pan reversal", async ({ page }) => {
+  await page.getByRole("group", { name: "Viewer mode" })
+    .getByRole("button", { name: "Canvas" }).click();
+  const canvas = page.getByRole("region", { name: "Free canvas media browser" });
+  const first = canvas.locator(".canvas-media").first();
+  await expect(first).toBeVisible();
+  const id = await first.getAttribute("data-canvas-media-id");
+  if (id === null) throw new Error("missing media id");
+  await first.evaluate((element) => {
+    (window as Window & { __retainedCanvasTile?: Element }).__retainedCanvasTile = element;
+  });
+
+  await canvas.focus();
+  for (let i = 0; i < 28; i++) await page.keyboard.press("ArrowRight");
+  await expect(canvas.locator(`[data-canvas-media-id="${id}"]`)).toHaveCount(0);
+
+  for (let i = 0; i < 28; i++) await page.keyboard.press("ArrowLeft");
+  const returned = canvas.locator(`[data-canvas-media-id="${id}"]`);
+  await expect(returned).toBeVisible();
+  expect(await returned.evaluate((element) =>
+    element === (window as Window & { __retainedCanvasTile?: Element }).__retainedCanvasTile,
+  )).toBe(true);
+});
+
 test("free canvas pans, zooms and opens image preview", async ({ page }) => {
   await page.getByRole("group", { name: "Viewer mode" })
     .getByRole("button", { name: "Canvas" }).click();
@@ -61,6 +113,14 @@ test("free canvas pans, zooms and opens image preview", async ({ page }) => {
   const canvas = page.getByRole("region", { name: "Free canvas media browser" });
   await expect(canvas).toBeVisible();
   await expect(canvas.locator(".canvas-media")).toHaveCount(4);
+
+  // The media rectangle itself is the tile: no padded card, border, or caption.
+  const firstMedia = canvas.locator(".canvas-media").first();
+  await expect(firstMedia.locator("img")).toHaveCount(1);
+  expect(await firstMedia.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return [style.padding, style.borderWidth, style.backgroundColor];
+  })).toEqual(["0px", "0px", "rgba(0, 0, 0, 0)"]);
 
   const zoom = canvas.getByLabel("Canvas zoom");
   const originalZoom = await zoom.textContent();
