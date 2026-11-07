@@ -12,6 +12,9 @@ export interface FreeformCanvasConfig {
 export interface FreeformCanvasNode extends LayoutNode {}
 export interface FreeformCanvasBounds { x: number; y: number; width: number; height: number }
 interface Rect { x: number; y: number; width: number; height: number }
+interface PackingBlock { gridX: number; gridY: number; freeRects: Rect[] }
+interface Placement { block: PackingBlock; x: number; y: number }
+const ACTIVE_PACKING_BLOCKS = 8;
 
 const DIRECTIONS = [
   { x: 1, y: 0 }, { x: 0, y: 1 }, { x: -1, y: 0 }, { x: 0, y: -1 },
@@ -40,7 +43,7 @@ export class FreeformCanvasLayoutBuilder {
   readonly #ids = new Set<string>();
   readonly #cells = new Map<string, number[]>();
   #bounds: FreeformCanvasBounds | null = null;
-  #freeRects: Rect[];
+  readonly #activeBlocks: PackingBlock[];
   #blockX = 0;
   #blockY = 0;
   #directionIndex = 0;
@@ -50,7 +53,7 @@ export class FreeformCanvasLayoutBuilder {
   #blockCount = 1;
 
   constructor(config: FreeformCanvasConfig = {}) {
-    this.#gap = nonNegative(config.gap ?? 12, "gap");
+    this.#gap = nonNegative(config.gap ?? 4, "gap");
     this.#baseArea = positive(config.baseArea ?? 70_000, "baseArea");
     this.#maxEdge = positive(config.maxEdge ?? 720, "maxEdge");
     this.#blockWidth = positive(config.blockWidth ?? 1600, "blockWidth");
@@ -59,7 +62,7 @@ export class FreeformCanvasLayoutBuilder {
     if (this.#maxEdge + this.#gap > Math.min(this.#blockWidth, this.#blockHeight)) {
       throw new RangeError("maxEdge plus gap must fit within both block dimensions");
     }
-    this.#freeRects = [this.#newFreeRect()];
+    this.#activeBlocks = [{ gridX: 0, gridY: 0, freeRects: [this.#newFreeRect()] }];
   }
 
   get size(): number { return this.#nodes.length; }
@@ -92,11 +95,11 @@ export class FreeformCanvasLayoutBuilder {
       }
       // Every item is guaranteed to fit in an empty neighborhood.
       if (local === null) throw new Error("image did not fit inside an empty canvas block");
-      this.#occupy({ x: local.x, y: local.y, width: width + this.#gap, height: height + this.#gap });
+      this.#occupy(local.block, { x: local.x, y: local.y, width: width + this.#gap, height: height + this.#gap });
       const node: FreeformCanvasNode = {
         mediaId: item.mediaId,
-        x: this.#blockX * (this.#blockWidth + this.#gap) + local.x,
-        y: this.#blockY * (this.#blockHeight + this.#gap) + local.y,
+        x: local.block.gridX * (this.#blockWidth + this.#gap) + local.x,
+        y: local.block.gridY * (this.#blockHeight + this.#gap) + local.y,
         width, height,
       };
       const index = this.#nodes.length;
@@ -141,26 +144,30 @@ export class FreeformCanvasLayoutBuilder {
     };
   }
 
-  #findFit(width: number, height: number): { x: number; y: number } | null {
-    let selected: Rect | null = null;
+  #findFit(width: number, height: number): Placement | null {
+    let selected: Placement | null = null;
     let bestShort = Number.POSITIVE_INFINITY;
     let bestLong = Number.POSITIVE_INFINITY;
-    for (const free of this.#freeRects) {
-      if (width > free.width || height > free.height) continue;
-      const short = Math.min(free.width - width, free.height - height);
-      const long = Math.max(free.width - width, free.height - height);
-      if (short < bestShort || (short === bestShort && long < bestLong)) {
-        selected = free;
-        bestShort = short;
-        bestLong = long;
+    // Keep a handful of recent neighborhoods available for back-filling.
+    // This avoids losing large areas of useful free space at every spiral turn.
+    for (const block of this.#activeBlocks) {
+      for (const free of block.freeRects) {
+        if (width > free.width || height > free.height) continue;
+        const short = Math.min(free.width - width, free.height - height);
+        const long = Math.max(free.width - width, free.height - height);
+        if (short < bestShort || (short === bestShort && long < bestLong)) {
+          selected = { block, x: free.x, y: free.y };
+          bestShort = short;
+          bestLong = long;
+        }
       }
     }
-    return selected === null ? null : { x: selected.x, y: selected.y };
+    return selected;
   }
 
-  #occupy(used: Rect): void {
+  #occupy(block: PackingBlock, used: Rect): void {
     const next: Rect[] = [];
-    for (const free of this.#freeRects) {
+    for (const free of block.freeRects) {
       if (!intersects(free, used)) {
         next.push(free);
         continue;
@@ -182,9 +189,8 @@ export class FreeformCanvasLayoutBuilder {
         next.push({ x: usedRight, y: free.y, width: freeRight - usedRight, height: free.height });
       }
     }
-    // MaxRects free regions may overlap one another, but none overlaps an item.
-    // Prune fully contained regions to keep packing work bounded per block.
-    this.#freeRects = next.filter((candidate, index) => !next.some((other, otherIndex) =>
+    // MaxRects free regions may overlap each other, never occupied images.
+    block.freeRects = next.filter((candidate, index) => !next.some((other, otherIndex) =>
       index !== otherIndex && contains(other, candidate) &&
       (!sameRect(other, candidate) || otherIndex < index),
     ));
@@ -209,7 +215,8 @@ export class FreeformCanvasLayoutBuilder {
       }
     }
     this.#blockCount++;
-    this.#freeRects = [this.#newFreeRect()];
+    this.#activeBlocks.push({ gridX: this.#blockX, gridY: this.#blockY, freeRects: [this.#newFreeRect()] });
+    if (this.#activeBlocks.length > ACTIVE_PACKING_BLOCKS) this.#activeBlocks.shift();
   }
 
   #indexNode(node: FreeformCanvasNode, index: number): void {
