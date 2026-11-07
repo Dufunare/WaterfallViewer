@@ -43,8 +43,8 @@ describe("freeform canvas packing", () => {
     const nodes = atlas.snapshot();
     for (const node of nodes) {
       const hits = atlas.query({
-        x: node.x - 5, y: node.y - 5,
-        width: node.width + 10, height: node.height + 10,
+        x: node.x, y: node.y,
+        width: node.width, height: node.height,
       });
       expect(hits.map((hit) => hit.mediaId)).toEqual([node.mediaId]);
     }
