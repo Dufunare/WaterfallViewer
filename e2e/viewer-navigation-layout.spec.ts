@@ -62,6 +62,14 @@ test("free canvas pans, zooms and opens image preview", async ({ page }) => {
   await expect(canvas).toBeVisible();
   await expect(canvas.locator(".canvas-media")).toHaveCount(4);
 
+  // The media rectangle itself is the tile: no padded card, border, or caption.
+  const firstMedia = canvas.locator(".canvas-media").first();
+  await expect(firstMedia.locator("img")).toHaveCount(1);
+  expect(await firstMedia.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return [style.padding, style.borderWidth, style.backgroundColor];
+  })).toEqual(["0px", "0px", "rgba(0, 0, 0, 0)"]);
+
   const zoom = canvas.getByLabel("Canvas zoom");
   const originalZoom = await zoom.textContent();
   await canvas.hover({ position: { x: 220, y: 190 } });
