@@ -12,8 +12,6 @@ const props = defineProps<{ browser: LegacyFlowBrowserController }>();
 const emit = defineEmits<{ activate: [mediaId: string] }>();
 const selection = useMediaSelection();
 
-const TILE_WIDTH = 310;
-const TILE_HEIGHT = 242;
 const TILE_STEP_X = 332;
 const TILE_STEP_Y = 264;
 const ATLAS_COLUMNS = 8;
