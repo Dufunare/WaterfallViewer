@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, shallowRef } from "vue";
+import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 
 import type {
   LegacyFlowBrowserController,
@@ -10,6 +10,7 @@ import { useMediaSelection } from "../selectionContext";
 
 const props = defineProps<{
   browser: LegacyFlowBrowserController;
+  trackCount: number;
 }>();
 const emit = defineEmits<{
   activate: [mediaId: string];
@@ -45,6 +46,11 @@ let columnElements: HTMLElement[] = [];
 let columnHeights: number[] = [];
 let masonryColumnWidth = 1;
 let masonryFrontierHeight = 0;
+let laneElements: HTMLElement[] = [];
+let laneWidths: number[] = [];
+let horizontalLaneHeight = 1;
+let horizontalFrontierWidth = 0;
+let knownItems: LegacyFlowItem[] = [];
 let flowContentTop = 0;
 let queue: LegacyFlowItem[] = [];
 let queueHead = 0;
@@ -57,15 +63,18 @@ let pendingAppendIds = new Set<string>();
 let appendFrame: number | null = null;
 let lastScrollAt = Number.NEGATIVE_INFINITY;
 let savedFlowScrollTop = 0;
+let savedHorizontalScrollLeft = 0;
+let flowVisible = false;
 let rootScrollEnabled = false;
 let destroyed = false;
 let loadTimer: number | null = null;
 
 const LEGACY_BATCH_SIZE = 25;
-const LEGACY_COLUMN_COUNT = 4;
-const LEGACY_COLUMN_GAP = 10;
-const LEGACY_ROW_GAP = 10;
-const LEGACY_JUSTIFIED_HEIGHT = 220;
+const LEGACY_COLUMN_GAP = 12;
+const LEGACY_ROW_GAP = 12;
+const LEGACY_EDGE_GAP = 14;
+const MIN_TRACK_COUNT = 1;
+const MAX_TRACK_COUNT = 32;
 const SCROLL_ACTIVE_WINDOW_MS = 90;
 const APPENDS_PER_SCROLL_FRAME = 2;
 const APPENDS_PER_IDLE_FRAME = 10;
@@ -82,16 +91,21 @@ function handleBrowserEvent(event: LegacyFlowBrowserEvent): void {
   }
 
   if (event.type === "append") {
+    knownItems.push(...event.items);
     appendNewQueueItems(event.items);
     loadNext();
     return;
   }
 
+  knownItems = [...event.items];
+  // Change the scroll axis before calculating the new layout geometry.
+  syncRootScrollerFromVisibility();
   if (event.snapshot.sessionId !== activeSessionId) {
     hardReset(event.snapshot.sessionId, event.items);
   } else {
     softReflow(event.items);
   }
+  syncRootScrollerFromVisibility();
 }
 
 function hardReset(
@@ -188,20 +202,27 @@ function appendNewQueueItems(items: readonly LegacyFlowItem[]): void {
   }
 }
 
+function currentTrackCount(): number {
+  return Number.isInteger(props.trackCount)
+    ? Math.min(MAX_TRACK_COUNT, Math.max(MIN_TRACK_COUNT, props.trackCount))
+    : 4;
+}
+
 function buildLayoutShell(): void {
   const imgbox = imgboxElement.value;
-  if (imgbox === null) {
-    return;
-  }
+  if (imgbox === null) return;
 
   imgbox.replaceChildren();
   columnElements = [];
   columnHeights = [];
   masonryFrontierHeight = 0;
+  laneElements = [];
+  laneWidths = [];
+  horizontalFrontierWidth = 0;
 
   if (snapshot.value.layoutMode === "masonry") {
     imgbox.className = "legacy-imgbox masonry";
-    for (let index = 0; index < LEGACY_COLUMN_COUNT; index += 1) {
+    for (let index = 0; index < currentTrackCount(); index += 1) {
       const column = document.createElement("div");
       column.className = "legacy-column";
       imgbox.appendChild(column);
@@ -210,9 +231,30 @@ function buildLayoutShell(): void {
     }
     updateMasonryColumnWidth();
   } else {
-    imgbox.className = "legacy-imgbox justified";
+    imgbox.className = "legacy-imgbox horizontal";
+    for (let index = 0; index < currentTrackCount(); index += 1) {
+      const lane = document.createElement("div");
+      lane.className = "legacy-lane";
+      imgbox.appendChild(lane);
+      laneElements.push(lane);
+      laneWidths.push(0);
+    }
+    updateHorizontalLaneHeight();
   }
   updateFlowContentTop();
+}
+
+function updateHorizontalLaneHeight(): void {
+  const viewport = viewportElement.value;
+  const imgbox = imgboxElement.value;
+  if (viewport === null || imgbox === null) return;
+  const count = currentTrackCount();
+  const available = Math.max(1,
+    viewport.clientHeight - 2 * LEGACY_EDGE_GAP -
+    (count - 1) * LEGACY_ROW_GAP,
+  );
+  horizontalLaneHeight = Math.max(1, available / count);
+  imgbox.style.setProperty("--wf-lane-height", `${horizontalLaneHeight}px`);
 }
 
 function updateFlowContentTop(): void {
@@ -228,9 +270,9 @@ function updateFlowContentTop(): void {
 function updateMasonryColumnWidth(): void {
   const viewport = viewportElement.value;
   const imgbox = imgboxElement.value;
-  const availableWidth = viewport?.clientWidth ?? imgbox?.clientWidth ?? 1;
-  const totalGap = LEGACY_COLUMN_GAP * Math.max(0, LEGACY_COLUMN_COUNT - 1);
-  masonryColumnWidth = Math.max(1, (availableWidth - totalGap) / LEGACY_COLUMN_COUNT);
+  const availableWidth = imgbox?.clientWidth ?? viewport?.clientWidth ?? 1;
+  const totalGap = LEGACY_COLUMN_GAP * Math.max(0, currentTrackCount() - 1);
+  masonryColumnWidth = Math.max(1, (availableWidth - totalGap) / currentTrackCount());
 }
 
 function reconcileMasonryHeightsFromLayout(): void {
@@ -242,14 +284,23 @@ function reconcileMasonryHeightsFromLayout(): void {
   updateMasonryFrontier();
 }
 
-function rebuildMasonryHeightModel(): void {
-  updateFlowContentTop();
-  if (snapshot.value.layoutMode !== "masonry" || columnElements.length === 0) {
+function reconcileHorizontalWidthsFromLayout(): void {
+  if (snapshot.value.layoutMode !== "justified" || laneElements.length === 0) {
     return;
   }
+  laneWidths = laneElements.map((lane) => lane.offsetWidth);
+  horizontalFrontierWidth = Math.min(...laneWidths);
+}
 
-  updateMasonryColumnWidth();
-  reconcileMasonryHeightsFromLayout();
+function rebuildMasonryHeightModel(): void {
+  updateFlowContentTop();
+  if (snapshot.value.layoutMode === "masonry") {
+    updateMasonryColumnWidth();
+    reconcileMasonryHeightsFromLayout();
+  } else {
+    updateHorizontalLaneHeight();
+    reconcileHorizontalWidthsFromLayout();
+  }
 }
 
 function estimatedMasonryImageHeight(img: HTMLImageElement): number {
@@ -257,6 +308,20 @@ function estimatedMasonryImageHeight(img: HTMLImageElement): number {
     return 0;
   }
   return masonryColumnWidth * (img.naturalHeight / img.naturalWidth);
+}
+
+function estimatedHorizontalImageWidth(img: HTMLImageElement): number {
+  if (img.naturalWidth <= 0 || img.naturalHeight <= 0) return 0;
+  return horizontalLaneHeight * (img.naturalWidth / img.naturalHeight);
+}
+
+function shortestLaneIndex(): number {
+  if (laneWidths.length === 0) return -1;
+  let shortest = 0;
+  for (let index = 1; index < laneWidths.length; index += 1) {
+    if (laneWidths[index] < laneWidths[shortest]) shortest = index;
+  }
+  return shortest;
 }
 
 function shortestColumnIndex(): number {
@@ -283,24 +348,19 @@ function updateMasonryFrontier(): void {
 }
 
 function nearLoadedEnd(): boolean {
-  const root = document.documentElement;
-  const imgbox = imgboxElement.value;
-  if (!rootScrollEnabled || imgbox === null) {
-    return false;
-  }
-  if (renderedCount === 0) {
-    return true;
+  if (!flowVisible || imgboxElement.value === null) return false;
+  if (renderedCount === 0) return true;
+  if (snapshot.value.layoutMode === "justified") {
+    const viewport = viewportElement.value;
+    if (viewport === null) return false;
+    return viewport.scrollLeft + viewport.clientWidth >=
+      horizontalFrontierWidth - viewport.clientWidth;
   }
 
-  const localFrontier =
-    snapshot.value.layoutMode === "masonry"
-      ? masonryFrontierHeight
-      : imgbox.scrollHeight;
-  const documentFrontier = flowContentTop + localFrontier;
-  return (
-    root.scrollTop + root.clientHeight >=
-    documentFrontier - root.clientHeight
-  );
+  const root = document.documentElement;
+  const documentFrontier = flowContentTop + masonryFrontierHeight;
+  return root.scrollTop + root.clientHeight >=
+    documentFrontier - root.clientHeight;
 }
 
 function hasPendingVisualWork(): boolean {
@@ -308,7 +368,7 @@ function hasPendingVisualWork(): boolean {
 }
 
 function loadNext(): void {
-  if (destroyed || !rootScrollEnabled) {
+  if (destroyed || !flowVisible) {
     return;
   }
 
@@ -459,13 +519,15 @@ function flushPendingAppends(timestamp: number): void {
     snapshot.value.layoutMode === "masonry"
       ? columnElements.map(() => document.createDocumentFragment())
       : null;
-  const justifiedFragment =
+  const horizontalFragments =
     snapshot.value.layoutMode === "justified"
-      ? document.createDocumentFragment()
+      ? laneElements.map(() => document.createDocumentFragment())
       : null;
 
   if (masonryFragments !== null && pendingAppends.length > 0) {
     reconcileMasonryHeightsFromLayout();
+  } else if (horizontalFragments !== null && pendingAppends.length > 0) {
+    reconcileHorizontalWidthsFromLayout();
   }
 
   while (committed < budget && pendingAppends.length > 0) {
@@ -485,7 +547,7 @@ function flushPendingAppends(timestamp: number): void {
       continue;
     }
 
-    appendWrap(pending.wrap, masonryFragments, justifiedFragment);
+    appendWrap(pending.wrap, masonryFragments, horizontalFragments);
     if (pending.completesLoad) {
       loading = Math.max(0, loading - 1);
     }
@@ -500,11 +562,14 @@ function flushPendingAppends(timestamp: number): void {
         column.appendChild(fragment);
       }
     }
-  } else if (
-    justifiedFragment !== null &&
-    justifiedFragment.childNodes.length > 0
-  ) {
-    imgboxElement.value?.appendChild(justifiedFragment);
+  } else if (horizontalFragments !== null) {
+    for (let index = 0; index < horizontalFragments.length; index += 1) {
+      const fragment = horizontalFragments[index];
+      const lane = laneElements[index];
+      if (fragment.childNodes.length > 0 && lane !== undefined) {
+        lane.appendChild(fragment);
+      }
+    }
   }
 
   if (pendingAppends.length > 0) {
@@ -520,7 +585,7 @@ function flushPendingAppends(timestamp: number): void {
 function appendWrap(
   wrap: HTMLElement,
   masonryFragments: readonly DocumentFragment[] | null = null,
-  justifiedFragment: DocumentFragment | null = null,
+  horizontalFragments: readonly DocumentFragment[] | null = null,
 ): void {
   const imgbox = imgboxElement.value;
   if (imgbox === null) {
@@ -555,19 +620,18 @@ function appendWrap(
     return;
   }
 
+  const targetIndex = shortestLaneIndex();
+  const lane = laneElements[targetIndex];
   const img = wrap.firstElementChild;
-  if (img instanceof HTMLImageElement) {
-    const width = Math.max(1, img.naturalWidth);
-    const height = Math.max(1, img.naturalHeight);
-    const ratio = width / height;
-    wrap.style.flexBasis = `${ratio * LEGACY_JUSTIFIED_HEIGHT}px`;
-    wrap.style.flexGrow = String(ratio);
+  if (targetIndex < 0 || lane === undefined || !(img instanceof HTMLImageElement)) {
+    return;
   }
-  if (justifiedFragment !== null) {
-    justifiedFragment.appendChild(wrap);
-  } else {
-    imgbox.appendChild(wrap);
-  }
+  const fragment = horizontalFragments?.[targetIndex];
+  if (fragment !== undefined) fragment.appendChild(wrap);
+  else lane.appendChild(wrap);
+  const gap = laneWidths[targetIndex] > 0 ? LEGACY_ROW_GAP : 0;
+  laneWidths[targetIndex] += gap + estimatedHorizontalImageWidth(img);
+  horizontalFrontierWidth = Math.min(...laneWidths);
 }
 
 function mediaIdFromEvent(event: Event): string | null {
@@ -617,9 +681,29 @@ function applySelectionClass(wrap: HTMLElement, mediaId: string): void {
 }
 
 function handleDocumentScroll(): void {
-  if (!rootScrollEnabled) {
-    return;
-  }
+  if (!rootScrollEnabled) return;
+  lastScrollAt = performance.now();
+  loadNext();
+}
+
+function handleHorizontalScroll(): void {
+  if (!flowVisible || snapshot.value.layoutMode !== "justified") return;
+  savedHorizontalScrollLeft = viewportElement.value?.scrollLeft ?? 0;
+  lastScrollAt = performance.now();
+  loadNext();
+}
+
+function handleHorizontalWheel(event: WheelEvent): void {
+  if (!flowVisible || snapshot.value.layoutMode !== "justified" ||
+      event.ctrlKey || event.metaKey) return;
+  const viewport = viewportElement.value;
+  if (viewport === null) return;
+  event.preventDefault();
+  const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY)
+    ? event.deltaX : event.deltaY;
+  const multiplier = event.deltaMode === 1 ? 16 :
+    event.deltaMode === 2 ? viewport.clientWidth : 1;
+  viewport.scrollLeft += delta * multiplier;
   lastScrollAt = performance.now();
   loadNext();
 }
@@ -631,40 +715,41 @@ function handleWindowResize(): void {
 
 function syncRootScrollerFromVisibility(): void {
   const viewport = viewportElement.value;
-  const shouldEnable = viewport !== null && viewport.style.display !== "none";
-  if (shouldEnable === rootScrollEnabled) {
-    return;
+  const visible = viewport !== null && viewport.style.display !== "none";
+  const useRoot = visible && snapshot.value.layoutMode === "masonry";
+  const root = document.documentElement;
+  const changed = flowVisible !== visible || rootScrollEnabled !== useRoot;
+  if (!changed) return;
+
+  if (rootScrollEnabled) {
+    savedFlowScrollTop = root.scrollTop;
+  } else if (flowVisible && snapshot.value.layoutMode === "justified") {
+    savedHorizontalScrollLeft = viewport?.scrollLeft ?? 0;
   }
 
-  const root = document.documentElement;
-  if (shouldEnable) {
-    root.classList.add(ROOT_SCROLL_CLASS);
-    document.body.classList.add(ROOT_SCROLL_CLASS);
-    rootScrollEnabled = true;
+  flowVisible = visible;
+  rootScrollEnabled = useRoot;
+  root.classList.toggle(ROOT_SCROLL_CLASS, useRoot);
+  document.body.classList.toggle(ROOT_SCROLL_CLASS, useRoot);
+  if (!useRoot) root.scrollTop = 0;
+
+  viewport?.classList.toggle("horizontal", visible && !useRoot);
+  if (visible) {
     window.requestAnimationFrame(() => {
-      if (!rootScrollEnabled || destroyed) {
-        return;
-      }
-      root.scrollTop = savedFlowScrollTop;
+      if (!flowVisible || destroyed || viewport === null) return;
+      if (rootScrollEnabled) root.scrollTop = savedFlowScrollTop;
+      else viewport.scrollLeft = savedHorizontalScrollLeft;
       rebuildMasonryHeightModel();
       loadNext();
     });
-    return;
   }
-
-  savedFlowScrollTop = root.scrollTop;
-  rootScrollEnabled = false;
-  root.classList.remove(ROOT_SCROLL_CLASS);
-  document.body.classList.remove(ROOT_SCROLL_CLASS);
-  root.scrollTop = 0;
 }
 
 function disableRootScroller(): void {
   const root = document.documentElement;
-  if (rootScrollEnabled) {
-    savedFlowScrollTop = root.scrollTop;
-  }
+  if (rootScrollEnabled) savedFlowScrollTop = root.scrollTop;
   rootScrollEnabled = false;
+  flowVisible = false;
   root.classList.remove(ROOT_SCROLL_CLASS);
   document.body.classList.remove(ROOT_SCROLL_CLASS);
   root.scrollTop = 0;
@@ -705,9 +790,9 @@ function detachImageCallbacks(state: LegacyItemState): void {
 
 function scrollToStart(): void {
   savedFlowScrollTop = 0;
-  if (rootScrollEnabled) {
-    document.documentElement.scrollTop = 0;
-  }
+  savedHorizontalScrollLeft = 0;
+  if (rootScrollEnabled) document.documentElement.scrollTop = 0;
+  if (viewportElement.value !== null) viewportElement.value.scrollLeft = 0;
 }
 
 function isTerminalScanState(status: string | undefined): boolean {
@@ -722,6 +807,8 @@ onMounted(() => {
 
   document.addEventListener("scroll", handleDocumentScroll, { passive: true });
   window.addEventListener("resize", handleWindowResize, { passive: true });
+  viewportElement.value?.addEventListener("wheel", handleHorizontalWheel, { passive: false });
+  viewportElement.value?.addEventListener("scroll", handleHorizontalScroll, { passive: true });
 
   const viewport = viewportElement.value;
   if (viewport !== null) {
@@ -735,6 +822,10 @@ onMounted(() => {
   loadNext();
 });
 
+watch(() => props.trackCount, () => {
+  softReflow(knownItems);
+}, { flush: "post" });
+
 onBeforeUnmount(() => {
   destroyed = true;
   layoutEpoch += 1;
@@ -742,6 +833,8 @@ onBeforeUnmount(() => {
   unsubscribeBrowser?.();
   unsubscribeSelection?.();
   displayObserver?.disconnect();
+  viewportElement.value?.removeEventListener("wheel", handleHorizontalWheel);
+  viewportElement.value?.removeEventListener("scroll", handleHorizontalScroll);
   document.removeEventListener("scroll", handleDocumentScroll);
   window.removeEventListener("resize", handleWindowResize);
   cancelScheduledLoad();
@@ -775,92 +868,100 @@ onBeforeUnmount(() => {
   overflow-x: hidden;
   overflow-y: scroll;
 }
-
 :global(body.wf-flow-root-scroll) {
   height: auto;
   min-height: 100vh;
   overflow: visible;
 }
-
 :global(body.wf-flow-root-scroll #app) {
   height: auto;
   min-height: 100vh;
 }
-
 :global(body.wf-flow-root-scroll .viewer-shell) {
   height: auto !important;
   min-height: 100vh;
   display: block;
 }
-
 :global(body.wf-flow-root-scroll .viewer-toolbar) {
   position: sticky;
   top: 0;
   z-index: 20;
 }
-
 :global(body.wf-flow-root-scroll .viewer-stage) {
   min-height: calc(100vh - var(--wf-toolbar-height));
   overflow: visible !important;
 }
-
 :global(body.wf-flow-root-scroll .viewer-stage > .legacy-flow-viewport.viewer-pane) {
   position: relative !important;
   inset: auto !important;
   min-height: calc(100vh - var(--wf-toolbar-height));
 }
-
 .legacy-flow-viewport {
   position: relative;
   width: 100%;
   min-height: calc(100vh - var(--wf-toolbar-height));
+  padding: 14px;
+  box-sizing: border-box;
 }
-
+.legacy-flow-viewport.horizontal {
+  position: absolute;
+  inset: 0;
+  height: 100%;
+  min-height: 0;
+  overflow-x: scroll;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  overscroll-behavior-y: contain;
+}
 .legacy-imgbox.masonry {
   display: flex;
   align-items: flex-start;
-  gap: v-bind('LEGACY_COLUMN_GAP + "px"');
+  gap: 12px;
   width: 100%;
   box-sizing: border-box;
 }
-
-.legacy-column {
+.legacy-imgbox.masonry :deep(.legacy-column) {
   flex: 1 1 0;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: v-bind('LEGACY_ROW_GAP + "px"');
+  gap: 12px;
 }
-
-.legacy-imgbox.justified {
+.legacy-imgbox.horizontal {
   display: flex;
-  flex-wrap: wrap;
-  align-content: flex-start;
-  gap: v-bind('LEGACY_ROW_GAP + "px"') v-bind('LEGACY_COLUMN_GAP + "px"');
-  width: 100%;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  width: max-content;
+  min-width: 100%;
+  box-sizing: border-box;
 }
-
+.legacy-imgbox.horizontal :deep(.legacy-lane) {
+  display: flex;
+  flex: 0 0 var(--wf-lane-height);
+  width: max-content;
+  height: var(--wf-lane-height);
+  gap: 12px;
+}
 :deep(.legacy-wrap) {
   position: relative;
   margin: 0;
   min-width: 0;
   cursor: pointer;
 }
-
 :deep(.legacy-wrap.selected) {
-  box-shadow: inset 0 0 0 2px var(--wf-accent);
+  outline: 2px solid var(--wf-accent);
+  outline-offset: -2px;
 }
-
 .legacy-imgbox.masonry :deep(.legacy-wrap) {
   width: 100%;
   flex: 0 0 auto;
 }
-
-.legacy-imgbox.justified :deep(.legacy-wrap) {
-  height: v-bind('LEGACY_JUSTIFIED_HEIGHT + "px"');
-  min-width: 0;
+.legacy-imgbox.horizontal :deep(.legacy-wrap) {
+  flex: 0 0 auto;
+  width: auto;
+  height: var(--wf-lane-height);
 }
-
 :deep(.legacy-image) {
   display: block;
   width: 100%;
@@ -868,10 +969,10 @@ onBeforeUnmount(() => {
   user-select: none;
   -webkit-user-drag: none;
 }
-
-.legacy-imgbox.justified :deep(.legacy-image) {
-  width: 100%;
+.legacy-imgbox.horizontal :deep(.legacy-image) {
+  width: auto;
   height: 100%;
-  object-fit: cover;
+  max-width: none;
+  object-fit: contain;
 }
 </style>
