@@ -69,9 +69,14 @@ class ImmediateRepresentationPort implements MediaRepresentationPort {
   }
 }
 
-class FakeResourcePort implements MediaResourcePort {
+class TrackingResourcePort implements MediaResourcePort {
+  readonly resolved: string[] = [];
+
+  constructor(readonly prefix: string) {}
+
   uriFor(resourceKey: string): string {
-    return `test-media://${resourceKey}`;
+    this.resolved.push(resourceKey);
+    return `${this.prefix}://${resourceKey}`;
   }
 }
 
@@ -103,15 +108,18 @@ async function flushMicrotasks(): Promise<void> {
 }
 
 describe("shared viewer workspace integration", () => {
-  it("feeds flow and canvas from one runtime, source pick and scan session", async () => {
+  it("feeds flow and canvas from one session while isolating their resource transports", async () => {
     const scanPort = new FakeScanPort();
     const picker = new SingleSourcePicker();
+    const resource = new TrackingResourcePort("standard-media");
+    const flowResource = new TrackingResourcePort("flow-media");
     const runtime = createViewerRuntime(
       {
         scan: scanPort,
         sourcePicker: picker,
         representation: new ImmediateRepresentationPort(),
-        resource: new FakeResourcePort(),
+        resource,
+        flowResource,
         detail: new NullDetailPort(),
       },
       {
@@ -132,6 +140,7 @@ describe("shared viewer workspace integration", () => {
     await runtime.workspace.pickAndOpenSource();
     expect(picker.calls).toBe(1);
     expect(scanPort.requests).toHaveLength(1);
+    expect(scanPort.requests[0].batchSize).toBe(16);
 
     scanPort.emit({ event: "started", data: { sessionId: "session-1" } });
     scanPort.emit({
@@ -166,6 +175,10 @@ describe("shared viewer workspace integration", () => {
     expect(canvas.snapshot.sessionId).toBe("session-1");
     expect(canvas.snapshot.itemCount).toBe(3);
     expect(scanPort.requests).toHaveLength(1);
+
+    expect(flowResource.resolved).toEqual(["1/1", "1/2", "1/3"]);
+    expect(resource.resolved.some((key) => key === "1/1" || key === "1/2" || key === "1/3")).toBe(false);
+    expect(resource.resolved.some((key) => key.startsWith("derived-"))).toBe(true);
 
     runtime.flowBrowser.setLayoutMode("justified");
     expect(runtime.flowBrowser.snapshot.layoutMode).toBe("justified");

@@ -18,7 +18,18 @@ export async function scanMedia(
   onEvent: (event: MediaScanEvent) => void,
 ): Promise<void> {
   const channel = new Channel<MediaScanEvent>();
-  channel.onmessage = onEvent;
+  let resolveTerminal: (() => void) | null = null;
+  const terminalEvent = new Promise<void>((resolve) => {
+    resolveTerminal = resolve;
+  });
+
+  channel.onmessage = (event) => {
+    onEvent(event);
+    if (event.event === "finished" || event.event === "cancelled") {
+      resolveTerminal?.();
+      resolveTerminal = null;
+    }
+  };
 
   const ipcRequest: TauriStartScanRequest = {
     sessionId: request.sessionId,
@@ -27,7 +38,10 @@ export async function scanMedia(
     batchSize: request.batchSize,
   };
 
-  await invoke("start_scan", { request: ipcRequest, onEvent: channel });
+  await Promise.all([
+    invoke("start_scan", { request: ipcRequest, onEvent: channel }),
+    terminalEvent,
+  ]);
 }
 
 export async function cancelScan(sessionId: string): Promise<boolean> {

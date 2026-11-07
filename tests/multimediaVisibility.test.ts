@@ -28,41 +28,41 @@ function media(
 }
 
 describe("multimedia browsing geometry", () => {
-  it("uses deterministic lightweight fallbacks for video and audio only", () => {
+  it("uses deterministic lightweight fallbacks when scan metadata is absent", () => {
     expect(projectMediaVisual(media("video", "video"))).toEqual({
       kind: "visual",
       width: 16,
       height: 9,
       source: "fallback",
     });
-    expect(projectMediaVisual(media("audio", "audio"))).toEqual({
+    for (const kind of ["audio", "image", "animated-image"] as const) {
+      expect(projectMediaVisual(media(kind, kind))).toEqual({
+        kind: "visual",
+        width: 1,
+        height: 1,
+        source: "fallback",
+      });
+    }
+    expect(
+      projectMediaVisual(media("broken", "animated-image", { width: 0, height: 10 })),
+    ).toEqual({
       kind: "visual",
       width: 1,
       height: 1,
       source: "fallback",
     });
-    expect(projectMediaVisual(media("image", "image"))).toEqual({
-      kind: "deferred",
-      reason: "missing-visual",
-    });
-    expect(
-      projectMediaVisual(media("broken", "animated-image", { width: 0, height: 10 })),
-    ).toEqual({
-      kind: "deferred",
-      reason: "invalid-visual",
-    });
   });
 
   it("changes the projection fingerprint when richer metadata replaces fallback geometry", () => {
-    const fallback = media("video", "video");
-    const metadata = media("video", "video", { width: 640, height: 480 });
+    const fallback = media("image", "image");
+    const metadata = media("image", "image", { width: 640, height: 480 });
 
     expect(mediaVisualFingerprint(fallback)).not.toBe(
       mediaVisualFingerprint(metadata),
     );
   });
 
-  it("keeps video and audio visible in masonry while malformed images remain deferred", () => {
+  it("keeps metadata-light images visible in masonry", () => {
     const model = new MasonryFlowModel({
       viewport: { width: 220, height: 180 },
       columnCount: 2,
@@ -78,18 +78,19 @@ describe("multimedia browsing geometry", () => {
     expect(snapshot.layout.nodes.map((node) => node.mediaId)).toEqual([
       "video",
       "audio",
+      "image",
     ]);
-    expect(snapshot.deferredMedia).toEqual([
-      { mediaId: "image", reason: "missing-visual" },
-    ]);
+    expect(snapshot.deferredMedia).toEqual([]);
 
     const videoNode = snapshot.layout.nodes[0];
     const audioNode = snapshot.layout.nodes[1];
+    const imageNode = snapshot.layout.nodes[2];
     expect(videoNode.width / videoNode.height).toBeCloseTo(16 / 9);
     expect(audioNode.width / audioNode.height).toBeCloseTo(1);
+    expect(imageNode.width / imageNode.height).toBeCloseTo(1);
   });
 
-  it("keeps video and audio visible in justified rows and flushes them at terminal", () => {
+  it("keeps metadata-light images visible in justified rows", () => {
     const model = new JustifiedFlowModel({
       viewport: { width: 600, height: 300 },
       targetRowHeight: 180,
@@ -109,14 +110,13 @@ describe("multimedia browsing geometry", () => {
     expect(snapshot.layout.nodes.map((node) => node.mediaId)).toEqual([
       "video",
       "audio",
+      "image",
     ]);
-    expect(snapshot.deferredMedia).toEqual([
-      { mediaId: "image", reason: "missing-visual" },
-    ]);
+    expect(snapshot.deferredMedia).toEqual([]);
     expect(snapshot.layout.pendingCount).toBe(0);
   });
 
-  it("uses the same video/audio fallback ratios in canvas while retaining canvas-only image discoverability", () => {
+  it("uses the same fallback ratios in canvas while retaining all media", () => {
     const scene = new CanvasSceneModel({
       atlas: {
         worldWidth: 1000,
@@ -153,17 +153,17 @@ describe("multimedia browsing geometry", () => {
     expect(imageNode.worldRect.width / imageNode.worldRect.height).toBeCloseTo(1);
   });
 
-  it("rebuilds fallback flow geometry when video metadata becomes available", () => {
+  it("rebuilds fallback geometry when image metadata becomes available", () => {
     const model = new MasonryFlowModel({
       viewport: { width: 220, height: 180 },
       columnCount: 1,
       gap: 10,
     });
-    model.sync("session-1", [media("video", "video")]);
+    model.sync("session-1", [media("image", "image")]);
     const fallbackHeight = model.snapshot().layout.nodes[0].height;
 
     model.sync("session-1", [
-      media("video", "video", { width: 640, height: 480 }),
+      media("image", "image", { width: 640, height: 480 }),
     ]);
     const metadataHeight = model.snapshot().layout.nodes[0].height;
 

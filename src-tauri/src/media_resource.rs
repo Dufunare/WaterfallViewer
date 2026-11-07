@@ -3,7 +3,7 @@ use std::{
     fs::File,
     io::{Read, Seek, SeekFrom},
     path::{Component, Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, RwLock},
 };
 
 use tauri::http::{
@@ -15,7 +15,7 @@ pub const MEDIA_PROTOCOL: &str = "waterfall-media";
 
 #[derive(Clone, Default)]
 pub struct MediaResourceRegistry {
-    inner: Arc<Mutex<ResourceRegistryState>>,
+    inner: Arc<RwLock<ResourceRegistryState>>,
 }
 
 #[derive(Default)]
@@ -90,7 +90,7 @@ impl MediaResourceRegistry {
 
         let mut state = self
             .inner
-            .lock()
+            .write()
             .map_err(|_| ResourceRegistryError::Poisoned)?;
         state.generation = state
             .generation
@@ -116,7 +116,7 @@ impl MediaResourceRegistry {
         let relative = safe_relative_path(relative_path)?;
         let mut state = self
             .inner
-            .lock()
+            .write()
             .map_err(|_| ResourceRegistryError::Poisoned)?;
         let session = state
             .current
@@ -139,7 +139,7 @@ impl MediaResourceRegistry {
         let path = path.into();
         let mut state = self
             .inner
-            .lock()
+            .write()
             .map_err(|_| ResourceRegistryError::Poisoned)?;
         let session = state
             .current
@@ -175,7 +175,7 @@ impl MediaResourceRegistry {
             parse_resource_key(resource_key).ok_or(ResourceRegistryError::UnknownResource)?;
         let mut state = self
             .inner
-            .lock()
+            .write()
             .map_err(|_| ResourceRegistryError::Poisoned)?;
         let session = state
             .current
@@ -214,7 +214,7 @@ impl MediaResourceRegistry {
     ) -> Result<MediaResourceTelemetrySnapshot, ResourceRegistryError> {
         let state = self
             .inner
-            .lock()
+            .read()
             .map_err(|_| ResourceRegistryError::Poisoned)?;
         let Some(session) = state.current.as_ref() else {
             return Ok(MediaResourceTelemetrySnapshot {
@@ -247,7 +247,7 @@ impl MediaResourceRegistry {
 
     pub fn resolve(&self, resource_key: &str) -> Option<PathBuf> {
         let (generation, key) = parse_resource_key(resource_key)?;
-        let state = self.inner.lock().ok()?;
+        let state = self.inner.read().ok()?;
         let session = state.current.as_ref()?;
         if session.generation != generation {
             return None;

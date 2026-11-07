@@ -20,9 +20,9 @@
     "security": {
       "csp": {
         "default-src": "'self'",
-        "connect-src": "ipc: http://ipc.localhost",
-        "img-src": "'self' waterfall-media: http://waterfall-media.localhost blob: data:",
-        "media-src": "'self' waterfall-media: http://waterfall-media.localhost blob:",
+        "connect-src": "ipc: http://ipc.localhost http://127.0.0.1:*",
+        "img-src": "'self' waterfall-media: http://waterfall-media.localhost http://127.0.0.1:* blob: data:",
+        "media-src": "'self' waterfall-media: http://waterfall-media.localhost http://127.0.0.1:* blob:",
         "style-src": "'self' 'unsafe-inline'",
         "font-src": "'self' data:",
         "object-src": "'none'",

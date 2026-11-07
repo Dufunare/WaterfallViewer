@@ -1,5 +1,6 @@
 mod ipc;
 mod local_source;
+mod media_http;
 mod media_resource;
 mod thumbnail_cache;
 mod thumbnail_request;
@@ -10,44 +11,23 @@ use ipc::{
     release_representation, request_thumbnail, start_scan, ScanRegistry,
 };
 use local_source::LocalSourceRegistry;
+use media_http::{get_media_http_origins, MediaHttpServer};
 use media_resource::{respond_to_media_request, MediaResourceRegistry, MEDIA_PROTOCOL};
-use tauri::Manager;
 use thumbnail_cache::ThumbnailCacheManager;
 use thumbnail_request::ThumbnailRequestRegistry;
-use waterfall_infra::SqliteVisualMetadataCache;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let resources = MediaResourceRegistry::default();
     let protocol_resources = resources.clone();
+    let media_http = MediaHttpServer::start(resources.clone())
+        .expect("failed to start loopback media streaming server");
 
     tauri::Builder::default()
-        .setup(|app| {
-            let registry = match app.path().app_cache_dir() {
-                Ok(cache_dir) => {
-                    let database_path = cache_dir.join("visual-metadata-cache.sqlite3");
-                    match SqliteVisualMetadataCache::open(database_path) {
-                        Ok(cache) => ScanRegistry::with_visual_metadata_cache(cache),
-                        Err(error) => {
-                            eprintln!(
-                                "failed to initialize persistent visual metadata cache; using memory cache: {error}"
-                            );
-                            ScanRegistry::default()
-                        }
-                    }
-                }
-                Err(error) => {
-                    eprintln!(
-                        "failed to resolve application cache directory; using memory cache: {error}"
-                    );
-                    ScanRegistry::default()
-                }
-            };
-            app.manage(registry);
-            Ok(())
-        })
+        .manage(ScanRegistry::default())
         .manage(LocalSourceRegistry::default())
         .manage(resources)
+        .manage(media_http)
         .manage(ThumbnailCacheManager::default())
         .manage(ThumbnailRequestRegistry::default())
         .register_asynchronous_uri_scheme_protocol(
@@ -71,7 +51,8 @@ pub fn run() {
             cancel_thumbnail_request,
             release_representation,
             get_media_detail,
-            pick_source_directory
+            pick_source_directory,
+            get_media_http_origins
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

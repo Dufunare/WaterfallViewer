@@ -32,26 +32,30 @@ test.describe("desktop viewer main flow", () => {
     await expect(page.getByRole("region", { name: "Flow media browser" })).toBeVisible();
   });
 
-  test("filters, sorts, selects and previews media", async ({ page }) => {
+  test("filters, sorts, selects and previews image media in legacy Flow", async ({ page }) => {
     await page.getByRole("button", { name: "Open folder" }).first().click();
     await expect(page.getByText("Ready", { exact: true })).toBeVisible();
 
     const filterGroup = page.getByRole("group", { name: "Media filter" });
+    const flow = page.getByRole("region", { name: "Flow media browser" });
 
+    // Query state still knows about multimedia, but this experimental Flow is
+    // intentionally image-only to match the supplied legacy implementation.
     await filterGroup.getByRole("button", { name: "Video" }).click();
     await expect(page.getByText("1 / 6 media", { exact: true })).toBeVisible();
-    await expect(page.getByTitle(/video\/Orbit\.mp4/)).toBeVisible();
+    await expect(flow.locator("figure")).toHaveCount(0);
 
     await filterGroup.getByRole("button", { name: "Audio" }).click();
     await expect(page.getByText("1 / 6 media", { exact: true })).toBeVisible();
-    await expect(page.getByTitle(/audio\/Rainfall\.flac/)).toBeVisible();
+    await expect(flow.locator("figure")).toHaveCount(0);
 
-    await filterGroup.getByRole("button", { name: "All" }).click();
-    await expect(page.getByText("6 media", { exact: true })).toBeVisible();
+    await filterGroup.getByRole("button", { name: "Images" }).click();
+    await expect(page.getByText("4 / 6 media", { exact: true })).toBeVisible();
+    await expect(flow.locator("figure")).toHaveCount(4);
 
     await page.getByLabel("Sort media").selectOption("name-desc");
-    const firstTile = page.getByRole("region", { name: "Flow media browser" }).locator("figure").first();
-    await expect(firstTile).toHaveAttribute("title", /audio\/Rainfall\.flac/);
+    const firstTile = flow.locator("figure").first();
+    await expect(firstTile).toHaveAttribute("title", /images\/Harbor\.jpg/);
 
     await page.getByLabel("Sort media").selectOption("source");
 
@@ -67,19 +71,5 @@ test.describe("desktop viewer main flow", () => {
     await expect(page.getByRole("dialog", { name: "Preview Canyon.jpg" })).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog")).toHaveCount(0);
-
-    await filterGroup.getByRole("button", { name: "Video" }).click();
-    await page.getByTitle(/video\/Orbit\.mp4/).dblclick();
-    const videoDialog = page.getByRole("dialog", { name: "Preview Orbit.mp4" });
-    await expect(videoDialog).toContainText("1:32");
-    await expect(videoDialog).toContainText("H.264");
-    await page.getByRole("button", { name: "Close preview" }).click();
-
-    await filterGroup.getByRole("button", { name: "Audio" }).click();
-    await page.getByTitle(/audio\/Rainfall\.flac/).dblclick();
-    const audioDialog = page.getByRole("dialog", { name: "Preview Rainfall.flac" });
-    await expect(audioDialog).toContainText("3:34");
-    await expect(audioDialog).toContainText("FLAC");
-    await expect(audioDialog).toContainText("WaterfallViewer Fixture");
   });
 });

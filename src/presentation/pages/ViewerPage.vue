@@ -9,9 +9,9 @@ import {
 } from "vue";
 
 import type {
-  BrowserLayoutMode,
-  MediaBrowserController,
-} from "../../application/browser/mediaBrowserController";
+  LegacyFlowBrowserController,
+  LegacyFlowLayoutMode,
+} from "../../application/browser/legacyFlowBrowserController";
 import type { CanvasBrowserController } from "../../application/canvas/canvasBrowserController";
 import type {
   MediaQueryController,
@@ -22,10 +22,10 @@ import type { ViewerWorkspaceController } from "../../application/viewer/viewerW
 import FlowViewport from "../components/FlowViewport.vue";
 
 const CanvasViewport = defineAsyncComponent(
-  () => import("../components/CanvasViewport.vue"),
+  () => import("../components/FreeCanvasViewport.vue"),
 );
 
-type ViewerMode = BrowserLayoutMode | "canvas";
+type ViewerMode = LegacyFlowLayoutMode | "canvas";
 type MediaFilterPreset = "all" | "images" | "video" | "audio";
 
 const filterPresets: readonly MediaFilterPreset[] = [
@@ -47,7 +47,7 @@ const sortOptions: ReadonlyArray<{ value: MediaSort; label: string }> = [
 const props = defineProps<{
   workspace: ViewerWorkspaceController;
   query: MediaQueryController;
-  flowBrowser: MediaBrowserController;
+  flowBrowser: LegacyFlowBrowserController;
   createCanvasBrowser: () => CanvasBrowserController;
 }>();
 const emit = defineEmits<{
@@ -55,6 +55,7 @@ const emit = defineEmits<{
 }>();
 
 const mode = ref<ViewerMode>(props.flowBrowser.snapshot.layoutMode);
+const trackCount = ref(4);
 const workspace = shallowRef(props.workspace.snapshot);
 const queryState = shallowRef<MediaQuerySnapshot>(props.query.snapshot);
 const pickingSource = ref(false);
@@ -141,6 +142,34 @@ const showEmptyState = computed(
 const activeError = computed(
   () => uiError.value ?? workspace.value.scanState?.error?.message ?? null,
 );
+
+function changeTrackCount(next: number): void {
+  if (!Number.isFinite(next)) return;
+  trackCount.value = Math.min(32, Math.max(1, Math.round(next)));
+}
+
+function handleTrackWheel(event: WheelEvent): void {
+  const delta = Math.abs(event.deltaY) >= Math.abs(event.deltaX)
+    ? event.deltaY : event.deltaX;
+  if (delta === 0) return;
+  changeTrackCount(trackCount.value + (delta < 0 ? 1 : -1));
+}
+
+function handleTrackKeydown(event: KeyboardEvent): void {
+  if (event.key === "ArrowUp" || event.key === "ArrowRight") {
+    event.preventDefault();
+    changeTrackCount(trackCount.value + 1);
+  } else if (event.key === "ArrowDown" || event.key === "ArrowLeft") {
+    event.preventDefault();
+    changeTrackCount(trackCount.value - 1);
+  } else if (event.key === "Home") {
+    event.preventDefault();
+    changeTrackCount(1);
+  } else if (event.key === "End") {
+    event.preventDefault();
+    changeTrackCount(32);
+  }
+}
 
 function setMode(nextMode: ViewerMode): void {
   if (nextMode === mode.value) {
@@ -293,6 +322,23 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
+      <div
+        v-if="mode !== 'canvas'"
+        class="track-spinner"
+        role="group"
+        :aria-label="mode === 'masonry' ? 'Column count' : 'Lane count'"
+        @wheel.prevent="handleTrackWheel"
+      >
+        <span class="track-label">{{ mode === 'masonry' ? '列数' : '行数' }}</span>
+        <button type="button" aria-label="Decrease track count"
+          :disabled="trackCount <= 1" @click="changeTrackCount(trackCount - 1)">−</button>
+        <output role="spinbutton" tabindex="0" aria-label="Track count"
+          aria-valuemin="1" aria-valuemax="32" :aria-valuenow="trackCount"
+          @keydown="handleTrackKeydown">{{ trackCount }}</output>
+        <button type="button" aria-label="Increase track count"
+          :disabled="trackCount >= 32" @click="changeTrackCount(trackCount + 1)">+</button>
+      </div>
+
       <div class="media-filters" role="group" aria-label="Media filter">
         <button
           v-for="preset in filterPresets"
@@ -373,13 +419,14 @@ onBeforeUnmount(() => {
         v-show="mode !== 'canvas'"
         class="viewer-pane"
         :browser="flowBrowser"
+        :track-count="trackCount"
         @activate="emit('activate', $event)"
       />
 
       <Suspense v-if="mode === 'canvas'">
         <CanvasViewport
           class="viewer-pane"
-          :create-browser="createCanvasBrowser"
+          :browser="flowBrowser"
           @activate="emit('activate', $event)"
         />
         <template #fallback>
@@ -416,7 +463,7 @@ onBeforeUnmount(() => {
   height: var(--wf-toolbar-height);
   flex: 0 0 var(--wf-toolbar-height);
   display: grid;
-  grid-template-columns: minmax(150px, 1fr) auto auto auto auto minmax(190px, 1fr);
+  grid-template-columns: minmax(120px, 1fr) auto auto auto auto auto minmax(160px, 1fr);
   align-items: center;
   gap: 10px;
   padding: 0 14px;
@@ -427,6 +474,7 @@ onBeforeUnmount(() => {
 
 .brand-block,
 .viewer-modes,
+.track-spinner,
 .media-filters,
 .sort-control,
 .toolbar-stats,
@@ -462,6 +510,30 @@ onBeforeUnmount(() => {
   border: 1px solid var(--wf-border);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.025);
+}
+
+.track-spinner {
+  gap: 4px;
+  white-space: nowrap;
+  font-size: 0.75rem;
+}
+.track-label { color: var(--wf-text-muted); margin-right: 3px; }
+.track-spinner button {
+  width: 23px;
+  height: 27px;
+  border: 1px solid var(--wf-border);
+  border-radius: 5px;
+  background: var(--wf-surface-raised);
+  color: var(--wf-text);
+  cursor: pointer;
+}
+.track-spinner button:disabled { cursor: default; opacity: 0.4; }
+.track-spinner output {
+  min-width: 22px;
+  color: var(--wf-text);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  outline-offset: 2px;
 }
 
 .mode-button,
@@ -519,7 +591,7 @@ onBeforeUnmount(() => {
 }
 
 .stat-separator {
-  opacity: 0.65;
+  opacity: 0.45;
 }
 
 .toolbar-actions {
@@ -529,52 +601,43 @@ onBeforeUnmount(() => {
 
 .toolbar-button,
 .empty-action {
-  border: 1px solid var(--wf-border);
-  border-radius: 8px;
-  background: var(--wf-accent);
-  color: #111318;
-  cursor: pointer;
-  transition:
-    opacity 120ms ease,
-    transform 120ms ease;
-}
-
-.toolbar-button {
-  min-height: 32px;
+  min-height: 31px;
   padding: 5px 11px;
-  font-size: 0.78rem;
+  border: 1px solid var(--wf-border-strong);
+  border-radius: 8px;
+  background: var(--wf-text);
+  color: var(--wf-bg);
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
 }
 
 .toolbar-button.secondary {
   background: transparent;
   color: var(--wf-text-muted);
+  border-color: var(--wf-border);
 }
 
 .toolbar-button:disabled,
 .empty-action:disabled {
-  cursor: default;
-  opacity: 0.48;
-}
-
-.toolbar-button:not(:disabled):active,
-.empty-action:not(:disabled):active {
-  transform: translateY(1px);
+  opacity: 0.55;
+  cursor: progress;
 }
 
 .error-strip {
-  z-index: 4;
   flex: 0 0 auto;
   padding: 7px 14px;
-  border-bottom: 1px solid rgba(239, 139, 139, 0.25);
-  background: rgba(120, 35, 35, 0.24);
-  color: #ffcaca;
-  font-size: 0.78rem;
+  border-bottom: 1px solid rgba(239, 139, 139, 0.28);
+  background: rgba(239, 139, 139, 0.08);
+  color: #efb0b0;
+  font-size: 0.76rem;
 }
 
 .viewer-stage {
   position: relative;
-  flex: 1 1 auto;
   min-height: 0;
+  flex: 1 1 auto;
   overflow: hidden;
 }
 
@@ -583,46 +646,46 @@ onBeforeUnmount(() => {
   inset: 0;
 }
 
+.empty-state,
 .canvas-loading {
   position: absolute;
   inset: 0;
-  display: grid;
-  place-items: center;
-  color: var(--wf-text-muted);
-  font-size: 0.78rem;
-  background: var(--wf-bg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+  text-align: center;
+  pointer-events: none;
 }
 
 .empty-state {
-  position: absolute;
-  z-index: 5;
-  inset: 0;
-  display: grid;
-  place-content: center;
-  justify-items: center;
-  padding: 28px;
-  text-align: center;
   background: var(--wf-bg);
 }
 
 .empty-title {
   margin: 0;
-  font-size: 1rem;
+  font-size: 0.95rem;
   font-weight: 600;
 }
 
 .empty-copy {
-  width: min(440px, 80vw);
-  margin: 8px 0 18px;
+  max-width: 430px;
+  margin: 0;
   color: var(--wf-text-muted);
-  font-size: 0.82rem;
-  line-height: 1.5;
+  font-size: 0.78rem;
+  line-height: 1.6;
 }
 
 .empty-action {
-  min-height: 36px;
-  padding: 7px 14px;
-  font-size: 0.82rem;
+  margin-top: 4px;
+  pointer-events: auto;
+}
+
+.canvas-loading {
+  color: var(--wf-text-muted);
+  font-size: 0.8rem;
 }
 
 .sr-only {
@@ -637,9 +700,9 @@ onBeforeUnmount(() => {
   border: 0;
 }
 
-@media (max-width: 1180px) {
+@media (max-width: 1100px) {
   .viewer-toolbar {
-    grid-template-columns: minmax(120px, 1fr) auto auto auto minmax(160px, 1fr);
+    grid-template-columns: minmax(130px, 1fr) auto auto auto auto;
   }
 
   .toolbar-stats {
@@ -647,32 +710,14 @@ onBeforeUnmount(() => {
   }
 }
 
-@media (max-width: 860px) {
-  .media-filters {
+@media (max-width: 820px) {
+  .media-filters,
+  .sort-control {
     display: none;
   }
 
   .viewer-toolbar {
-    grid-template-columns: minmax(120px, 1fr) auto auto minmax(150px, 1fr);
-  }
-}
-
-@media (max-width: 680px) {
-  .sort-control,
-  .source-name,
-  .toolbar-button.secondary {
-    display: none;
-  }
-
-  .viewer-toolbar {
-    grid-template-columns: minmax(120px, 1fr) auto minmax(145px, 1fr);
-    gap: 8px;
-    padding: 0 8px;
-  }
-
-  .mode-button,
-  .filter-button {
-    padding-inline: 7px;
+    grid-template-columns: minmax(120px, 1fr) auto auto;
   }
 }
 </style>
