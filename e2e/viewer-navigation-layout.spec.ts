@@ -54,6 +54,34 @@ test("rows use a horizontal scrollbar and vertical wheel moves horizontally", as
   ).toBe(0);
 });
 
+test("free canvas reuses the same eager image element during small drags", async ({ page }) => {
+  await page.getByRole("group", { name: "Viewer mode" })
+    .getByRole("button", { name: "Canvas" }).click();
+  const canvas = page.getByRole("region", { name: "Free canvas media browser" });
+  const first = canvas.locator(".canvas-media").first();
+  await expect(first).toBeVisible();
+  const mediaId = await first.getAttribute("data-canvas-media-id");
+  if (mediaId === null) throw new Error("missing media id");
+  await expect(first.locator("img")).toHaveAttribute("loading", "eager");
+  await first.evaluate((element) => {
+    (window as Window & { __firstCanvasTile?: Element }).__firstCanvasTile = element;
+  });
+  await first.click();
+  await expect(first).toHaveClass(/selected/);
+
+  const box = await canvas.boundingBox();
+  if (box === null) throw new Error("canvas bounds unavailable");
+  await page.mouse.move(box.x + 270, box.y + 240);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 320, box.y + 260, { steps: 5 });
+  await page.mouse.up();
+  expect(await canvas.evaluate((element, id) => {
+    const tile = [...element.querySelectorAll<HTMLElement>("[data-canvas-media-id]")]
+      .find((candidate) => candidate.dataset.canvasMediaId === id);
+    return tile === (window as Window & { __firstCanvasTile?: Element }).__firstCanvasTile;
+  }, mediaId)).toBe(true);
+});
+
 test("free canvas pans, zooms and opens image preview", async ({ page }) => {
   await page.getByRole("group", { name: "Viewer mode" })
     .getByRole("button", { name: "Canvas" }).click();
