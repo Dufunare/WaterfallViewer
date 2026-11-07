@@ -75,10 +75,10 @@ export class FreeformCanvasLayoutBuilder {
     const batchIds = new Set<string>();
     for (const item of items) {
       if (!item.mediaId.trim() || this.#ids.has(item.mediaId) || batchIds.has(item.mediaId)) {
-        throw new RangeError(\`missing or duplicate mediaId: \${item.mediaId}\`);
+        throw new RangeError(`missing or duplicate mediaId: ${item.mediaId}`);
       }
-      positive(item.width, \`width for \${item.mediaId}\`);
-      positive(item.height, \`height for \${item.mediaId}\`);
+      positive(item.width, `width for ${item.mediaId}`);
+      positive(item.height, `height for ${item.mediaId}`);
       batchIds.add(item.mediaId);
     }
 
@@ -237,7 +237,7 @@ export class FreeformCanvasLayoutBuilder {
     const maxX = Math.floor((rect.x + rect.width) / size);
     const maxY = Math.floor((rect.y + rect.height) / size);
     for (let y = minY; y <= maxY; y++) {
-      for (let x = minX; x <= maxX; x++) callback(\`\${x}:\${y}\`);
+      for (let x = minX; x <= maxX; x++) callback(`${x}:${y}`);
     }
   }
 
@@ -274,14 +274,14 @@ function stableHash(text: string): number {
   return value >>> 0;
 }
 function finite(value: number, name: string): number {
-  if (!Number.isFinite(value)) throw new RangeError(\`\${name} must be finite\`);
+  if (!Number.isFinite(value)) throw new RangeError(`${name} must be finite`);
   return value;
 }
 function positive(value: number, name: string): number {
-  if (!Number.isFinite(value) || value <= 0) throw new RangeError(\`\${name} must be positive and finite\`);
+  if (!Number.isFinite(value) || value <= 0) throw new RangeError(`${name} must be positive and finite`);
   return value;
 }
 function nonNegative(value: number, name: string): number {
-  if (!Number.isFinite(value) || value < 0) throw new RangeError(\`\${name} must be non-negative and finite\`);
+  if (!Number.isFinite(value) || value < 0) throw new RangeError(`${name} must be non-negative and finite`);
   return value;
 }
