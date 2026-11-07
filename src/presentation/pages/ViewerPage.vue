@@ -22,7 +22,7 @@ import type { ViewerWorkspaceController } from "../../application/viewer/viewerW
 import FlowViewport from "../components/FlowViewport.vue";
 
 const CanvasViewport = defineAsyncComponent(
-  () => import("../components/CanvasViewport.vue"),
+  () => import("../components/FreeCanvasViewport.vue"),
 );
 
 type ViewerMode = LegacyFlowLayoutMode | "canvas";
@@ -55,6 +55,7 @@ const emit = defineEmits<{
 }>();
 
 const mode = ref<ViewerMode>(props.flowBrowser.snapshot.layoutMode);
+const trackCount = ref(4);
 const workspace = shallowRef(props.workspace.snapshot);
 const queryState = shallowRef<MediaQuerySnapshot>(props.query.snapshot);
 const pickingSource = ref(false);
@@ -141,6 +142,34 @@ const showEmptyState = computed(
 const activeError = computed(
   () => uiError.value ?? workspace.value.scanState?.error?.message ?? null,
 );
+
+function changeTrackCount(next: number): void {
+  if (!Number.isFinite(next)) return;
+  trackCount.value = Math.min(32, Math.max(1, Math.round(next)));
+}
+
+function handleTrackWheel(event: WheelEvent): void {
+  const delta = Math.abs(event.deltaY) >= Math.abs(event.deltaX)
+    ? event.deltaY : event.deltaX;
+  if (delta === 0) return;
+  changeTrackCount(trackCount.value + (delta < 0 ? 1 : -1));
+}
+
+function handleTrackKeydown(event: KeyboardEvent): void {
+  if (event.key === "ArrowUp" || event.key === "ArrowRight") {
+    event.preventDefault();
+    changeTrackCount(trackCount.value + 1);
+  } else if (event.key === "ArrowDown" || event.key === "ArrowLeft") {
+    event.preventDefault();
+    changeTrackCount(trackCount.value - 1);
+  } else if (event.key === "Home") {
+    event.preventDefault();
+    changeTrackCount(1);
+  } else if (event.key === "End") {
+    event.preventDefault();
+    changeTrackCount(32);
+  }
+}
 
 function setMode(nextMode: ViewerMode): void {
   if (nextMode === mode.value) {
@@ -293,6 +322,23 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
+      <div
+        v-if="mode !== 'canvas'"
+        class="track-spinner"
+        role="group"
+        :aria-label="mode === 'masonry' ? 'Column count' : 'Lane count'"
+        @wheel.prevent="handleTrackWheel"
+      >
+        <span class="track-label">{{ mode === 'masonry' ? '列数' : '行数' }}</span>
+        <button type="button" aria-label="Decrease track count"
+          :disabled="trackCount <= 1" @click="changeTrackCount(trackCount - 1)">−</button>
+        <output role="spinbutton" tabindex="0" aria-label="Track count"
+          aria-valuemin="1" aria-valuemax="32" :aria-valuenow="trackCount"
+          @keydown="handleTrackKeydown">{{ trackCount }}</output>
+        <button type="button" aria-label="Increase track count"
+          :disabled="trackCount >= 32" @click="changeTrackCount(trackCount + 1)">+</button>
+      </div>
+
       <div class="media-filters" role="group" aria-label="Media filter">
         <button
           v-for="preset in filterPresets"
@@ -373,13 +419,14 @@ onBeforeUnmount(() => {
         v-show="mode !== 'canvas'"
         class="viewer-pane"
         :browser="flowBrowser"
+        :track-count="trackCount"
         @activate="emit('activate', $event)"
       />
 
       <Suspense v-if="mode === 'canvas'">
         <CanvasViewport
           class="viewer-pane"
-          :create-browser="createCanvasBrowser"
+          :browser="flowBrowser"
           @activate="emit('activate', $event)"
         />
         <template #fallback>
@@ -416,7 +463,7 @@ onBeforeUnmount(() => {
   height: var(--wf-toolbar-height);
   flex: 0 0 var(--wf-toolbar-height);
   display: grid;
-  grid-template-columns: minmax(150px, 1fr) auto auto auto auto minmax(190px, 1fr);
+  grid-template-columns: minmax(120px, 1fr) auto auto auto auto auto minmax(160px, 1fr);
   align-items: center;
   gap: 10px;
   padding: 0 14px;
@@ -427,6 +474,7 @@ onBeforeUnmount(() => {
 
 .brand-block,
 .viewer-modes,
+.track-spinner,
 .media-filters,
 .sort-control,
 .toolbar-stats,
@@ -462,6 +510,30 @@ onBeforeUnmount(() => {
   border: 1px solid var(--wf-border);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.025);
+}
+
+.track-spinner {
+  gap: 4px;
+  white-space: nowrap;
+  font-size: 0.75rem;
+}
+.track-label { color: var(--wf-text-muted); margin-right: 3px; }
+.track-spinner button {
+  width: 23px;
+  height: 27px;
+  border: 1px solid var(--wf-border);
+  border-radius: 5px;
+  background: var(--wf-surface-raised);
+  color: var(--wf-text);
+  cursor: pointer;
+}
+.track-spinner button:disabled { cursor: default; opacity: 0.4; }
+.track-spinner output {
+  min-width: 22px;
+  color: var(--wf-text);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  outline-offset: 2px;
 }
 
 .mode-button,
