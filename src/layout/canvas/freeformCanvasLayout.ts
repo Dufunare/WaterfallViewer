@@ -128,6 +128,37 @@ export class FreeformCanvasLayoutBuilder {
       .map((node) => ({ ...node }));
   }
 
+  /**
+   * Early-exit visibility count used by zoom guards. Avoids sorting and cloning
+   * hundreds of nodes for every wheel event.
+   */
+  count(rect: FreeformCanvasBounds, stopAt = Number.POSITIVE_INFINITY): number {
+    finite(rect.x, "rect.x");
+    finite(rect.y, "rect.y");
+    positive(rect.width, "rect.width");
+    positive(rect.height, "rect.height");
+    if (!(stopAt > 0) || Number.isNaN(stopAt)) throw new RangeError("stopAt must be positive");
+    const size = this.#cellSize;
+    const minX = Math.floor(rect.x / size);
+    const minY = Math.floor(rect.y / size);
+    const maxX = Math.floor((rect.x + rect.width) / size);
+    const maxY = Math.floor((rect.y + rect.height) / size);
+    const seen = new Set<number>();
+    let total = 0;
+    for (let y = minY; y <= maxY; y++) {
+      for (let x = minX; x <= maxX; x++) {
+        const bucket = this.#cells.get(`${x}:${y}`);
+        if (bucket === undefined) continue;
+        for (const index of bucket) {
+          if (seen.has(index)) continue;
+          seen.add(index);
+          if (intersects(this.#nodes[index], rect) && ++total >= stopAt) return total;
+        }
+      }
+    }
+    return total;
+  }
+
   snapshot(): readonly FreeformCanvasNode[] { return this.#nodes.map((node) => ({ ...node })); }
 
   #sizeFor(item: MediaVisualInfo): { width: number; height: number } {
